@@ -31,7 +31,7 @@ import nsml
 from nsml import DATASET_PATH, IS_ON_NSML
 
 NUM_CLASSES = 265
-
+change = True
 def top_n_accuracy_score(y_true, y_prob, n=5, normalize=True):
     num_obs, num_labels = y_prob.shape
     idx = num_labels - n - 1

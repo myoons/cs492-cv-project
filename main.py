@@ -31,7 +31,7 @@ import nsml
 from nsml import DATASET_PATH, IS_ON_NSML
 
 NUM_CLASSES = 265
-change = True
+
 def top_n_accuracy_score(y_true, y_prob, n=5, normalize=True):
     num_obs, num_labels = y_prob.shape
     idx = num_labels - n - 1
@@ -61,7 +61,7 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
         
 def adjust_learning_rate(opts, optimizer, epoch):
-    return pass
+    return 'a'
 
 # For Mixup
 def linear_rampup(current, rampup_length):

@@ -28,7 +28,6 @@ DATASET_GETTERS = {'cifar10': get_cifar10,
                    'cifar100': get_cifar100}
 best_acc = 0
 
-
 def save_checkpoint(state, is_best, checkpoint, filename='checkpoint.pth.tar'):
     filepath = os.path.join(checkpoint, filename)
     torch.save(state, filepath)

@@ -6,13 +6,12 @@ import torchvision.transforms as transforms
 import numpy as np
 import torch
 
-from randaugment import RandAugmentMC
+from utils.randaugment import RandAugmentMC
 
-mean=[0.485, 0.456, 0.406]
-std=[0.229, 0.224, 0.225]
 
 def default_image_loader(path):
     return Image.open(path).convert('RGB')
+
 
 class TransformTwice:
     def __init__(self, transform):
@@ -23,8 +22,9 @@ class TransformTwice:
         out2 = self.transform(inp)
         return out1, out2    
 
+
 class TransformFix(object):
-    def __init__(self, mean, std, imResize, imsize):
+    def __init__(self, imResize, imsize, mean=[0.485, 0.456, 0.406], sstd=[0.229, 0.224, 0.225]):
         self.weak = transforms.Compose([
             transforms.Resize(imResize),
             transforms.RandomResizedCrop(imsize),
@@ -46,7 +46,8 @@ class TransformFix(object):
         weak = self.weak(x)
         strong = self.strong(x)
         return weak, strong
-    
+
+
 class SimpleImageLoader(torch.utils.data.Dataset):
     def __init__(self, rootdir, split, ids=None, transform=None, loader=default_image_loader):
         if split == 'test':

@@ -62,7 +62,7 @@ parser.add_argument('--steps_per_epoch', type=int, default=30, metavar='N', help
 # basic settings
 parser.add_argument('--arch', default='wideresnet', type=str, choices=['wideresnet', 'resnext'], help='architecture name')
 parser.add_argument('--name',default='WiderResNet', type=str, help='output model name')
-parser.add_argument('--gpu_ids',default='0,1', type=str, help='gpu_ids: e.g. 0  0,1,2  0,2')
+parser.add_argument('--gpu_ids',default='0', type=str, help='gpu_ids: e.g. 0  0,1,2  0,2')
 parser.add_argument('--batchsize', default=64, type=int, help='batchsize')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
 parser.add_argument('--num_workers', type=int, default=3, help='number of workers')
@@ -101,7 +101,8 @@ def main():
     global_step = 0
 
     print(args)
-
+    print(torch.__version__)
+    
     # Set GPU
     seed = args.seed
     random.seed(seed)
@@ -110,12 +111,13 @@ def main():
 
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu_ids
     use_gpu = torch.cuda.is_available()
+
     if use_gpu:
-        args.cuda = 1 # change
+        args.cuda = 1
         print("Currently using GPU {}".format(args.gpu_ids))
         cudnn.benchmark = True
         torch.cuda.manual_seed_all(seed)
-        args.device = torch.device('cuda', 0)
+        args.device = torch.device(0)
     else:
         print("Currently using CPU (GPU is highly recommended)")
         args.device = torch.device('cpu')
@@ -133,7 +135,6 @@ def main():
     # Create a Model
     ######################################################################     
     model = create_model(args)
-    print(model)
     model.to(args.device)
 
     if len(args.gpu_ids.split(',')) > 1:
@@ -141,18 +142,18 @@ def main():
     model.train()
 
     ### DO NOT MODIFY THIS BLOCK ###
-    if IS_ON_NSML:
-        bind_nsml(model)
-        if args.pause:
-            nsml.paused(scope=locals())
+    # if IS_ON_NSML:
+    #     bind_nsml(model)
+    #     if args.pause:
+    #         nsml.paused(scope=locals())
     ################################
 
     ######################################################################
     # Load dataset
     ######################################################################     
     train_ids, val_ids, unl_ids = split_ids(os.path.join(DATASET_PATH, 'train/train_label'), 0.2)    
-    augmentation = TransformFix()
-    weak_transform, strong_transform = augmentation(args.imResize, args.imsize)
+    augmentation = TransformFix(args.imResize, args.imsize)
+    weak_transform, strong_transform = augmentation()
 
     print('found {} train, {} validation and {} unlabeled images'.format(len(train_ids), len(val_ids), len(unl_ids)))
     labeled_trainloader = torch.utils.data.DataLoader(
@@ -190,7 +191,7 @@ def main():
     optimizer = optim.SGD(model.parameters(), lr=args.lr,
                           momentum=0.9, nesterov=args.nesterov)
 
-    args.iteration = len()
+    args.iteration = len(labeled_trainloader) // args.batchsize
     args.total_steps = args.epochs * args.iteration 
 
     scheduler = get_cosine_schedule_with_warmup(optimizer, args.warmup * args.iteration, args.total_steps)                          
@@ -203,9 +204,9 @@ def main():
     # INSTANTIATE STEP LEARNING SCHEDULER CLASS
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.steps_per_epoch)
 
-    # Train and Validation 
-
-
+    start_epoch = 0
+    # Train and Validation
+    #  
 
 def train():
     pass

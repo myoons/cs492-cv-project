@@ -24,7 +24,7 @@ class TransformTwice:
 
 
 class TransformFix(object):
-    def __init__(self, imResize, imsize, mean=[0.485, 0.456, 0.406], sstd=[0.229, 0.224, 0.225]):
+    def __init__(self, imResize, imsize, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
         self.weak = transforms.Compose([
             transforms.Resize(imResize),
             transforms.RandomResizedCrop(imsize),
@@ -42,10 +42,8 @@ class TransformFix(object):
             transforms.Normalize(mean=mean, std=std),
             RandAugmentMC(n=2, m=10)])
     
-    def __call__(self, x):
-        weak = self.weak(x)
-        strong = self.strong(x)
-        return weak, strong
+    def __call__(self):
+        return self.weak, self.strong
 
 
 class SimpleImageLoader(torch.utils.data.Dataset):

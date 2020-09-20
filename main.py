@@ -3,6 +3,7 @@ from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
 
+import math
 import os
 import sys
 import argparse
@@ -17,15 +18,18 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.optim import lr_scheduler
 import torch.backends.cudnn as cudnn
-import torch.nn.functional as F
 
 import torchvision
 from torchvision import datasets, models, transforms
 
 import torch.nn.functional as F
 
-from ImageDataLoader import SimpleImageLoader
-from models import Res18, Res50, Dense121, Res18_basic
+from utils.Transform import TransformFix
+from utils.ImageDataLoader import SimpleImageLoader
+from utils.nsml import _infer, bind_nsml
+from utils.preTrain import set_seed, SemiLoss, adjust_learning_rate, AverageMeter
+
+from models.Res import Res34, Res50
 
 import nsml
 from nsml import DATASET_PATH, IS_ON_NSML
@@ -45,37 +49,7 @@ def top_n_accuracy_score(y_true, y_prob, n=5, normalize=True):
     else:
         return counter
         
-class AverageMeter(object):
-    """Computes and stores the average and current value"""
-    def __init__(self):
-        self.reset()
-    def reset(self):
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
-        self.count = 0
-    def update(self, val, n=1):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = self.sum / self.count
-        
-def adjust_learning_rate(opts, optimizer, epoch):
-    return 'a'
-
-# For Mixup
-def linear_rampup(current, rampup_length):
-    if rampup_length == 0:
-        return 1.0
-    else:
-        current = np.clip(current / rampup_length, 0.0, 1.0)
-        return float(current)
-        
-class SemiLoss(object):
-    def __call__(self, outputs_x, targets_x, outputs_u, targets_u, epoch, final_epoch):
-        return pass
-
-# For Loading data
+# For Loading 
 def split_ids(path, ratio):
     with open(path) as f:
         ids_l = []
@@ -99,82 +73,35 @@ def split_ids(path, ratio):
 
     return train_ids, val_ids, ids_u
 
-
-### NSML functions
-def _infer(model, root_path, test_loader=None):
-    if test_loader is None:
-        test_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(root_path, 'test',
-                               transform=transforms.Compose([
-                                   transforms.Resize(opts.imResize),
-                                   transforms.CenterCrop(opts.imsize),
-                                   transforms.ToTensor(),
-                                   transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                               ])), batch_size=opts.batchsize, shuffle=False, num_workers=4, pin_memory=True)
-        print('loaded {} test images'.format(len(test_loader.dataset)))
-
-    outputs = []
-    s_t = time.time()
-    for idx, image in enumerate(test_loader):
-        if torch.cuda.is_available():
-            image = image.cuda()
-        _, probs = model(image)
-        output = torch.argmax(probs, dim=1)
-        output = output.detach().cpu().numpy()
-        outputs.append(output)
-
-    outputs = np.concatenate(outputs)
-    return outputs
-
-def bind_nsml(model):
-    def save(dir_name, *args, **kwargs):
-        os.makedirs(dir_name, exist_ok=True)
-        state = model.state_dict()
-        torch.save(state, os.path.join(dir_name, 'model.pt'))
-        print('saved')
-
-    def load(dir_name, *args, **kwargs):
-        state = torch.load(os.path.join(dir_name, 'model.pt'))
-        state = {k.replace('module.', ''): v for k, v in state.items()}
-        model.load_state_dict(state)
-        print('loaded')
-
-    def infer(root_path):
-        return _infer(model, root_path)
-
-    nsml.bind(save=save, load=load, infer=infer)
-
-
 ######################################################################
 # Options
 ######################################################################
-parser = argparse.ArgumentParser(description='Sample Product200K Training')
+parser = argparse.ArgumentParser(description='Pytorch FixMatch Fashion Dataset Classify Alogrithm')
 parser.add_argument('--start_epoch', type=int, default=1, metavar='N', help='number of start epoch (default: 1)')
-parser.add_argument('--epochs', type=int, default=200, metavar='N', help='number of epochs to train (default: 200)')
-parser.add_argument('--steps_per_epoch', type=int, default=30, metavar='N', help='number of steps to train per epoch (-1: num_data//batchsize)')
+parser.add_argument('--epochs', type=int, default=300, metavar='N', help='number of epochs to train (default: 300)')
+parser.add_argument('--steps_per_epoch', type=int, default=40, metavar='N', help='number of steps to train per epoch (-1: num_data//batchsize)')
 
 # basic settings
-parser.add_argument('--name',default='Res18baseMM', type=str, help='output model name')
+parser.add_argument('--name',default='FM_RES', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default='0', type=str,help='gpu_ids: e.g. 0  0,1,2  0,2')
-parser.add_argument('--batchsize', default=200, type=int, help='batchsize')
+parser.add_argument('--batchsize', default=30, type=int, help='batchsize')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
 
 # basic hyper-parameters
 parser.add_argument('--momentum', type=float, default=0.9, metavar='LR', help=' ')
 parser.add_argument('--lr', type=float, default=1e-4, metavar='LR', help='learning rate')
-parser.add_argument('--imResize', default=256, type=int, help='')
-parser.add_argument('--imsize', default=224, type=int, help='')
-parser.add_argument('--ema_decay', type=float, default=0.999, help='ema decay rate (0: no ema model)')
+parser.add_argument('--imResize', default=256, type=int, help='Img Resize')
+parser.add_argument('--imsize', default=224, type=int, help='Img Crop Size')
 
 # arguments for logging and backup
 parser.add_argument('--log_interval', type=int, default=10, metavar='N', help='logging training status')
-parser.add_argument('--save_epoch', type=int, default=50, help='saving epoch interval')
+parser.add_argument('--save_epoch', type=int, default=60, help='saving epoch interval')
 
-# hyper-parameters for mix-match
-parser.add_argument('--alpha', default=0.75, type=float)
-parser.add_argument('--lambda-u', default=75, type=float)
-parser.add_argument('--T', default=0.5, type=float)
-
+# hyper-parameters for Fix-Match
+parser.add_argument('--lambda-u', default=1, type=float, help='Coefficient of Unlabeled Loss')
+parser.add_argument('--threshold', default=0.7, type=float, help='Pseudo Label Threshold')
+parser.add_argument('--mu', default=10, type=int, help='coefficient of unlabeled batch size')
+                    
 ### DO NOT MODIFY THIS BLOCK ###
 # arguments for nsml 
 parser.add_argument('--pause', type=int, default=0)
@@ -182,97 +109,133 @@ parser.add_argument('--mode', type=str, default='train')
 ################################
 
 def main():
-    global opts, global_step
-    opts = parser.parse_args()
-
+    global args, global_step
+    args = parser.parse_args()
     global_step = 0
 
-    print("options",opts)
+    print("args :",args)
+
+    use_gpu = torch.cuda.is_available()
+
+    if use_gpu :
+        device = torch.device('cuda', int(args.gpu_ids))
+        args.n_gpu = torch.cuda.device_count()
+        args.device = device
+    else :
+        device= torch.device('cpu')
+        args.n_gpu = 0
+        args.device = device
+    
+    # Set Seed
+    set_seed(args)
 
     # Set model
+    model = Res34(NUM_CLASSES)
+    model.to(args.device)
+    model.eval()
 
+    # If GPU is available
+    if use_gpu :
+        print("Currently using GPU {}".format(args.gpu_ids))
+        print("Number of GPUs Using",args.n_gpu)
+        cudnn.benchmark = True
+
+        # Set multi-gpu (Data Parallel)
+        model = nn.DataParallel(model)
+
+    else :
+        print("Currently using CPU (GPU is highly recommended)")
+    
     ### DO NOT MODIFY THIS BLOCK ###
     if IS_ON_NSML:
-        bind_nsml(model_for_test)
-        if opts.pause:
+        bind_nsml(model)
+        if args.pause:
             nsml.paused(scope=locals())
     ################################
 
-    if opts.mode == 'train':
+    if args.mode == 'train':
 
-        # set multi-gpu (Data Parallel)
+        # Train Model
+        model.train()
 
         # Set dataloader
         train_ids, val_ids, unl_ids = split_ids(os.path.join(DATASET_PATH, 'train/train_label'), 0.2)
+        augmentation = TransformFix(args.imResize, args.imsize)
+        WA, SA = augmentation()
+
         print('found {} train, {} validation and {} unlabeled images'.format(len(train_ids), len(val_ids), len(unl_ids)))
-        train_loader = torch.utils.data.DataLoader(
+        label_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'train', train_ids,
                               transform=transforms.Compose([
-                                  transforms.Resize(opts.imResize),
-                                  # Augmentation 
+                                  transforms.Resize(args.imResize),
+                                  transforms.RandomResizedCrop(args.imsize),
+                                  transforms.RandomHorizontalFlip(),
+                                  transforms.RandomVerticalFlip(),
                                   transforms.ToTensor(),
                                   transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-                                batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
-        print('train_loader done')
+                                batch_size=args.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+        print('label_loader done')
 
-        unlabel_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids,
-                              transform=transforms.Compose([
-                                  transforms.Resize(opts.imResize),
-                                  # Augmentation   
-                                  transforms.ToTensor(),
-                                  transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-                                batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+        unlabel_weak_loader = torch.utils.data.DataLoader(
+        SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids,
+                            transform=WA),
+                            batch_size=args.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+        
+        unlabel_strong_loader = torch.utils.data.DataLoader(
+        SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids,
+                            transform=SA),
+                            batch_size=args.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+
         print('unlabel_loader done')    
 
         validation_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'val', val_ids,
                                transform=transforms.Compose([
-                                   transforms.Resize(opts.imResize),
-                                   transforms.CenterCrop(opts.imsize),
-                                   transforms.ToTensor(),
-                                   transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-                               batch_size=opts.batchsize, shuffle=False, num_workers=0, pin_memory=True, drop_last=False)
+                                  transforms.Resize(args.imResize),
+                                  transforms.RandomResizedCrop(args.imsize),
+                                  transforms.RandomHorizontalFlip(),
+                                  transforms.RandomVerticalFlip(),
+                                  transforms.ToTensor(),
+                                  transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
+                               batch_size=args.batchsize, shuffle=False, num_workers=0, pin_memory=True, drop_last=False)
         print('validation_loader done')
 
-        if opts.steps_per_epoch < 0:
-            opts.steps_per_epoch = len(train_loader)
-
         # Set optimizer
+        optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=5e-4)
 
         # INSTANTIATE LOSS CLASS
         train_criterion = SemiLoss()
-
-        # INSTANTIATE STEP LEARNING SCHEDULER CLASS
-        # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
-
+        
         # Train and Validation 
         best_acc = -1
-        for epoch in range(opts.start_epoch, opts.epochs + 1):
-            # print('start training')
-            loss, loss_x, loss_u, avg_top1, avg_top5 = train(opts, train_loader, unlabel_loader, model, train_criterion, optimizer, epoch, use_gpu)
-            print('epoch {:03d}/{:03d} finished, loss: {:.3f}, loss_x: {:.3f}, loss_un: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%'.format(epoch, opts.epochs, loss, loss_x, loss_u, avg_top1, avg_top5))
-            # scheduler.step()
+        print('start training')
 
-            # print('start validation')
-            acc_top1, acc_top5 = validation(opts, validation_loader, epoch, use_gpu)
+        model.zero_grad()
+
+        for epoch in range(args.start_epoch, args.epochs + 1):
+            
+            loss, loss_x, loss_u, avg_top1, avg_top5 = train(args, label_loader,  unlabel_weak_loader, unlabel_strong_loader, model, train_criterion, optimizer, epoch, use_gpu)
+            print('epoch {:03d}/{:03d} finished, learning_rate : {}, loss: {:.3f}, loss_x: {:.3f}, loss_un: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%'.format(epoch, args.epochs, args.lr, loss, loss_x, loss_u, avg_top1, avg_top5))
+
+            acc_top1, acc_top5 = validation(args, validation_loader, model, epoch, use_gpu)
             is_best = acc_top1 > best_acc
             best_acc = max(acc_top1, best_acc)
             if is_best:
                 print('model achieved the best accuracy ({:.3f}%) - saving best checkpoint...'.format(best_acc))
                 if IS_ON_NSML:
-                    nsml.save(opts.name + '_best')
+                    nsml.save(args.name + '_best')
                 else:
                     pass # Error Prevent
-
-            if (epoch + 1) % opts.save_epoch == 0:
+            
+            if (epoch + 1) % args.save_epoch == 0:
                 if IS_ON_NSML:
-                    nsml.save(opts.name + '_e{}'.format(epoch))
+                    nsml.save(args.name + '_e{}'.format(epoch))
                 else:
-                    pass # Error Prevent
+                    print(args.name + '_Not In NSML{}'.format(epoch))
+            
+            adjust_learning_rate(args, optimizer, epoch)
 
-                
-def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, epoch, use_gpu):
+def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model, criterion, optimizer, epoch, use_gpu):
     global global_step
 
     losses = AverageMeter()
@@ -286,93 +249,68 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, epoch
     weight_scale = AverageMeter()
     acc_top1 = AverageMeter()
     acc_top5 = AverageMeter()
-    
+
     model.train()
     
-    # nCnt =0 
-    out = False
-    local_step = 0
-    while not out:
-        labeled_train_iter = iter(train_loader)
-        unlabeled_train_iter = iter(unlabel_loader)
-        for batch_idx in range(len(train_loader)):
-            try:
-                data = labeled_train_iter.next()
-                inputs_x, targets_x = data
-            except:
-                labeled_train_iter = iter(train_loader)       
-                data = labeled_train_iter.next()
-                inputs_x, targets_x = data
-            try:
-                data = unlabeled_train_iter.next()
-                inputs_u1, inputs_u2 = data
-            except:
-                unlabeled_train_iter = iter(unlabel_loader)       
-                data = unlabeled_train_iter.next()
-                inputs_u1, inputs_u2 = data         
+    train_loader = zip(label_loader, unlabel_weak_loader, unlabel_strong_loader)
+
+    for batch_idx, (data_x, data_u_w, data_u_s) in enumerate(train_loader) :
         
-            batch_size = inputs_x.size(0)
-            # Transform label to one-hot
-            classno = NUM_CLASSES 
-            targets_org = targets_x
-            targets_x = torch.zeros(batch_size, classno).scatter_(1, targets_x.view(-1,1), 1)        
-            
-            if use_gpu :
-                # CPU -> GPU로 Data 보내기 
+        optimizer.zero_grad()
+
+        inputs_x, targets_x = data_x
         
-            with torch.no_grad():
-                # compute guessed labels of unlabel samples
+        _, inputs_u_w = data_u_w
+        _, inputs_u_s = data_u_s
+        
+        batchSize = inputs_x.shape[0]
 
-            # mixup (Optional)
-            
-            optimizer.zero_grad()
-            
-            fea, logits = model() # Fill Input
+        targets_org = targets_x
 
-            # Train -> Loss -> Update           
-            
-            loss_x, loss_un, weigts_mixing = criterion() # Fill In
-            loss = loss_x + weigts_mixing * loss_un
+        targets_x = targets_x.to(args.device)
 
-            losses.update(loss.item(), inputs_x.size(0))
-            losses_x.update(loss_x.item(), inputs_x.size(0))
-            losses_un.update(loss_un.item(), inputs_x.size(0))
-            weight_scale.update(weigts_mixing, inputs_x.size(0))
+        inputs_x = inputs_x.to(args.device)
+        inputs_u_w = inputs_u_w.to(args.device)
+        inputs_u_s = inputs_u_s.to(args.device)
 
-            losses_curr.update(loss.item(), inputs_x.size(0))
-            losses_x_curr.update(loss_x.item(), inputs_x.size(0))
-            losses_un_curr.update(loss_un.item(), inputs_x.size(0))
-                    
-            # compute gradient and do SGD step
-            loss.backward()
-            optimizer.step()
-            
-            with torch.no_grad():
-                # compute guessed labels of unlabel samples
-                embed_x, pred_x1 = model(inputs_x)
+        fea_x, logits_x = model(inputs_x)
+        fea_u_w, targets_u = model(inputs_u_w)
+        fea_u_s, logits_u = model(inputs_u_s)
 
-            if IS_ON_NSML and global_step % opts.log_interval == 0:
-                nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_un_curr.avg)
-                losses_curr.reset()
-                losses_x_curr.reset()
-                losses_un_curr.reset()
+        loss_x, loss_un, unlabeled_weight = criterion(args, logits_x, targets_x, logits_u, targets_u)
+        loss = loss_x + unlabeled_weight * loss_un
+        
+        losses.update(loss.item(), batchSize)
+        losses_x.update(loss_x.item(), batchSize)
+        losses_un.update(loss_un.item(), batchSize)
 
-            acc_top1b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=1)*100
-            acc_top5b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=5)*100    
-            acc_top1.update(torch.as_tensor(acc_top1b), inputs_x.size(0))        
-            acc_top5.update(torch.as_tensor(acc_top5b), inputs_x.size(0))   
+        losses_curr.update(loss.item(), batchSize)
+        losses_x_curr.update(loss_x.item(), batchSize)
+        losses_un_curr.update(loss_un.item(), batchSize)
 
-            local_step += 1
-            global_step += 1
+        loss.backward()
+        optimizer.step()
 
-            if local_step >= opts.steps_per_epoch:
-                out = True
-                break
+        with torch.no_grad():
+            # compute guessed labels of unlabel samples
+            embed_x, pred_x1 = model(inputs_x) 
+
+        if IS_ON_NSML and global_step % args.log_interval == 0:
+            nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_un_curr.avg)
+            losses_curr.reset()
+            losses_x_curr.reset()
+            losses_un_curr.reset()
+
+        acc_top1b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=1)*100
+        acc_top5b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=5)*100    
+        acc_top1.update(torch.as_tensor(acc_top1b), batchSize)        
+        acc_top5.update(torch.as_tensor(acc_top5b), batchSize)   
+
+        global_step += 1
         
     return losses.avg, losses_x.avg, losses_un.avg, acc_top1.avg, acc_top5.avg
 
-
-def validation(opts, validation_loader, model, epoch, use_gpu):
+def validation(args, validation_loader, model, epoch, use_gpu):
     model.eval()
     avg_top1= 0.0
     avg_top5 = 0.0
@@ -398,8 +336,5 @@ def validation(opts, validation_loader, model, epoch, use_gpu):
 
     return avg_top1, avg_top5
 
-
-
 if __name__ == '__main__':
     main()
-

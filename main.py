@@ -206,7 +206,7 @@ def main():
 
     start_epoch = 0
     # Train and Validation
-    #  
+    print(len(labeled_trainloader), len(unlabeled_weak_trainloader))
 
 def train():
     pass

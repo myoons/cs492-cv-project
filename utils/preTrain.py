@@ -25,11 +25,15 @@ class AverageMeter(object):
 
 def adjust_learning_rate(args, optimizer, epoch):
     """Decay Learning Rate"""
-    lr = args.lr * math.cos((7 *math.pi * epoch)/(300*16))
-    args.lr = lr
+    lr = args.lr * math.cos((7 *math.pi * epoch)/(250*16))
+    # lr = args.lr * (0.1 ** (epoch // 60))
     
+    args.lr = lr
+
     for param_group in optimizer.param_groups :
         param_group["lr"] = lr
+    
+    return optimizer
     
 # Set Seed
 def set_seed(args) :

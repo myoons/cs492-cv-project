@@ -28,7 +28,7 @@ from utils.Transform import TransformFix
 from utils.ImageDataLoader import SimpleImageLoader
 from utils.preTrain import set_seed, SemiLoss, LabelLoss, UnLabelLoss ,adjust_learning_rate, AverageMeter
 
-from models.models import Res50
+from models.models import Res50, Res34
 
 import nsml
 from nsml import DATASET_PATH, IS_ON_NSML
@@ -84,7 +84,7 @@ parser.add_argument('--epochs', type=int, default=250, metavar='N', help='number
 parser.add_argument('--name',default='Res', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default=0, type=int ,help='gpu_ids: e.g. 0  0,1,2  0,2')
 parser.add_argument('--n_gpu',default=0, type=int,help='number of gpus using')
-parser.add_argument('--batchsize', default=20, type=int, help='batchsize')
+parser.add_argument('--batchsize', default=53, type=int, help='batchsize')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
 
 # basic hyper-parameters
@@ -127,7 +127,7 @@ def _infer(model, root_path, test_loader=None):
     for idx, image in enumerate(test_loader):
         if torch.cuda.is_available():
             image = image.cuda()
-        _, probs = model(image)
+        probs = model(image)
         output = torch.argmax(probs, dim=1)
         output = output.detach().cpu().numpy()
         outputs.append(output)
@@ -174,7 +174,7 @@ def main():
     set_seed(args)
 
     # Set model
-    model = Res50(NUM_CLASSES)
+    model = Res34(NUM_CLASSES)
     model.to(args.device)
     model.eval()
 
@@ -316,7 +316,7 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
         targets_x = targets_x.to(args.device)
         inputs_x = inputs_x.to(args.device)
 
-        fea_x, logits_x = model(inputs_x)
+        logits_x = model(inputs_x)
 
         loss_x = label_criterion(args, logits_x, targets_x)
 
@@ -334,8 +334,8 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
                 inputs_u_w = inputs_u_w.to(args.device)
                 inputs_u_s = inputs_u_s.to(args.device)
 
-                fea_u_w, targets_u = model(inputs_u_w)
-                fea_u_s, logits_u = model(inputs_u_s)
+                targets_u = model(inputs_u_w)
+                logits_u = model(inputs_u_s)
 
                 tempLoss_un = unlabel_criterion(args, logits_u, targets_u)
                 loss_un += tempLoss_un
@@ -355,7 +355,7 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
             
         with torch.no_grad():
             # compute guessed labels of unlabel samples
-            embed_x, pred_x1 = model(inputs_x) 
+            pred_x1 = model(inputs_x) 
 
         if IS_ON_NSML and global_step % args.log_interval == 0:
             nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_un_curr.avg)
@@ -383,7 +383,7 @@ def validation(args, validation_loader, model, epoch, use_gpu):
             if use_gpu :
                 inputs = inputs.cuda()
             nCnt +=1
-            embed_fea, preds = model(inputs)
+            preds = model(inputs)
 
             acc_top1 = top_n_accuracy_score(labels.numpy(), preds.data.cpu().numpy(), n=1)*100
             acc_top5 = top_n_accuracy_score(labels.numpy(), preds.data.cpu().numpy(), n=5)*100

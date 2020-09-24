@@ -92,7 +92,7 @@ parser.add_argument('--seed', type=int, default=123, help='random seed')
 
 # basic hyper-parameters
 parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
-parser.add_argument('--lr', type=float, default=1e-3, metavar='LR', help='learning rate')
+parser.add_argument('--lr', type=float, default=4e-4, metavar='LR', help='learning rate')
 parser.add_argument('--weightDecay', type=float, default=4e-4, metavar='WD', help='weight decay')
 parser.add_argument('--imResize', default=256, type=int, help='Img Resize')
 parser.add_argument('--imsize', default=224, type=int, help='Img Crop Size')
@@ -336,6 +336,9 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
         loss_x, loss_un, unlabeled_weight = criterion(args, logits_x, targets_x, logits_u, targets_u)
         loss = loss_x + unlabeled_weight * loss_un
         
+        loss.backward()
+        optimizer.step()
+
         losses.update(loss.item(), batchSize)
         losses_x.update(loss_x.item(), batchSize)
         losses_un.update(loss_un.item(), batchSize)
@@ -344,8 +347,6 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
         losses_x_curr.update(loss_x.item(), batchSize)
         losses_un_curr.update(loss_un.item(), batchSize)
 
-        loss.backward()
-        optimizer.step()
 
         with torch.no_grad():
             # compute guessed labels of unlabel samples

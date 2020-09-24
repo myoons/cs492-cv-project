@@ -34,6 +34,9 @@ from models.models import Res50, Res101
 import nsml
 from nsml import DATASET_PATH, IS_ON_NSML
 
+
+from models.efficientnet_pytorch import EfficientNet
+
 NUM_CLASSES = 265
 
 def top_n_accuracy_score(y_true, y_prob, n=5, normalize=True):
@@ -79,17 +82,17 @@ def split_ids(path, ratio):
 parser = argparse.ArgumentParser(description='Pytorch FixMatch Fashion Dataset Classify Alogrithm')
 parser.add_argument('--start_epoch', type=int, default=1, metavar='N', help='number of start epoch (default: 1)')
 parser.add_argument('--save_epoch', type=int, default=60, metavar='N', help='epoch per saving (default: 1)')
-parser.add_argument('--epochs', type=int, default=250, metavar='N', help='number of epochs to train (default: 300)')
+parser.add_argument('--epochs', type=int, default=200, metavar='N', help='number of epochs to train (default: 300)')
 
 # basic settings
 parser.add_argument('--name',default='Res', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default='0', type=str,help='gpu_ids: e.g. 0  0,1,2  0,2')
-parser.add_argument('--batchsize', default=64, type=int, help='batchsize')
+parser.add_argument('--batchsize', default=53, type=int, help='batchsize')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
 
 # basic hyper-parameters
 parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
-parser.add_argument('--lr', type=float, default=1e-4, metavar='LR', help='learning rate')
+parser.add_argument('--lr', type=float, default=1e-3, metavar='LR', help='learning rate')
 parser.add_argument('--weightDecay', type=float, default=4e-4, metavar='WD', help='weight decay')
 parser.add_argument('--imResize', default=256, type=int, help='Img Resize')
 parser.add_argument('--imsize', default=224, type=int, help='Img Crop Size')
@@ -99,7 +102,7 @@ parser.add_argument('--log_interval', type=int, default=10, metavar='N', help='l
 
 # hyper-parameters for Fix-Match
 parser.add_argument('--lambda-u', default=1, type=float, help='Coefficient of Unlabeled Loss')
-parser.add_argument('--threshold', default=0.95, type=float, help='Pseudo Label Threshold')
+parser.add_argument('--threshold', default=0.90, type=float, help='Pseudo Label Threshold')
 parser.add_argument('--mu', default=10, type=int, help='coefficient of unlabeled batch size')
 parser.add_argument('--nesterov', action='store_true', default=True, help='use nesterov momentum')
 
@@ -127,7 +130,7 @@ def _infer(model, root_path, test_loader=None):
     for idx, image in enumerate(test_loader):
         if torch.cuda.is_available():
             image = image.cuda()
-        _, probs = model(image)
+            probs = model(image)
         output = torch.argmax(probs, dim=1)
         output = output.detach().cpu().numpy()
         outputs.append(output)
@@ -177,6 +180,7 @@ def main():
 
     # Set model
     model = Res50(NUM_CLASSES)
+    # model = EfficientNet.from_pretrained('efficientnet-b2', num_classes=NUM_CLASSES)
     model.to(args.device)
     model.eval()
 
@@ -249,6 +253,7 @@ def main():
 
         # Set optimizer
         optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay= args.weightDecay, momentum=args.momentum, nesterov=args.nesterov)
+        # optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weightDecay)
 
         # INSTANTIATE LOSS CLASS
         train_criterion = SemiLoss()
@@ -256,8 +261,6 @@ def main():
         # Train and Validation 
         best_acc = -1
         print('start training')
-
-        model.zero_grad()
         
         for epoch in range(args.start_epoch, args.epochs + 1):
 
@@ -309,6 +312,8 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
 
     for batch_idx, (data_x, data_u_w, data_u_s) in enumerate(train_loader) :
 
+        optimizer.zero_grad()
+
         inputs_x, targets_x = data_x
         
         _, inputs_u_w = data_u_w
@@ -324,9 +329,9 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
         inputs_u_w = inputs_u_w.to(args.device)
         inputs_u_s = inputs_u_s.to(args.device)
 
-        fea_x, logits_x = model(inputs_x)
-        fea_u_w, targets_u = model(inputs_u_w)
-        fea_u_s, logits_u = model(inputs_u_s)
+        logits_x = model(inputs_x)
+        targets_u = model(inputs_u_w)
+        logits_u = model(inputs_u_s)
 
         loss_x, loss_un, unlabeled_weight = criterion(args, logits_x, targets_x, logits_u, targets_u)
         loss = loss_x + unlabeled_weight * loss_un
@@ -344,7 +349,7 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
 
         with torch.no_grad():
             # compute guessed labels of unlabel samples
-            embed_x, pred_x1 = model(inputs_x) 
+            pred_x1 = model(inputs_x) 
 
         if IS_ON_NSML and global_step % args.log_interval == 0:
             nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_un_curr.avg)
@@ -372,7 +377,7 @@ def validation(args, validation_loader, model, epoch, use_gpu):
             if use_gpu :
                 inputs = inputs.cuda()
             nCnt +=1
-            embed_fea, preds = model(inputs)
+            preds = model(inputs)
 
             acc_top1 = top_n_accuracy_score(labels.numpy(), preds.data.cpu().numpy(), n=1)*100
             acc_top5 = top_n_accuracy_score(labels.numpy(), preds.data.cpu().numpy(), n=5)*100

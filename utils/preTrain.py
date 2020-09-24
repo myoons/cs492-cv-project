@@ -50,7 +50,7 @@ class SemiLoss(object):
 
         Lx = F.cross_entropy(logits_x, targets_x, reduction='mean')
 
-        torch.no_grad() :
+        with torch.no_grad() :
             pseudo_label = torch.softmax(logits_u_w.detach(), dim=-1)
             max_probs, targets_u = torch.max(pseudo_label, dim=-1)
             mask = max_probs.ge(args.threshold).float()

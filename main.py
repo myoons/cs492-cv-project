@@ -28,7 +28,8 @@ from utils.Transform import TransformFix
 from utils.ImageDataLoader import SimpleImageLoader
 from utils.preTrain import set_seed, SemiLoss, adjust_learning_rate, AverageMeter
 
-from models.Res import Res18, Res34, Res50
+from models.models import Res50, Res101
+# from models.models import EfficientB4
 
 import nsml
 from nsml import DATASET_PATH, IS_ON_NSML
@@ -77,17 +78,19 @@ def split_ids(path, ratio):
 ######################################################################
 parser = argparse.ArgumentParser(description='Pytorch FixMatch Fashion Dataset Classify Alogrithm')
 parser.add_argument('--start_epoch', type=int, default=1, metavar='N', help='number of start epoch (default: 1)')
+parser.add_argument('--save_epoch', type=int, default=60, metavar='N', help='epoch per saving (default: 1)')
 parser.add_argument('--epochs', type=int, default=250, metavar='N', help='number of epochs to train (default: 300)')
 
 # basic settings
-parser.add_argument('--name',default='FM_RES', type=str, help='output model name')
+parser.add_argument('--name',default='Res', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default='0', type=str,help='gpu_ids: e.g. 0  0,1,2  0,2')
 parser.add_argument('--batchsize', default=64, type=int, help='batchsize')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
 
 # basic hyper-parameters
-parser.add_argument('--momentum', type=float, default=0.9, metavar='LR', help=' ')
+parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
 parser.add_argument('--lr', type=float, default=1e-4, metavar='LR', help='learning rate')
+parser.add_argument('--weightDecay', type=float, default=4e-4, metavar='WD', help='weight decay')
 parser.add_argument('--imResize', default=256, type=int, help='Img Resize')
 parser.add_argument('--imsize', default=224, type=int, help='Img Crop Size')
 
@@ -96,7 +99,7 @@ parser.add_argument('--log_interval', type=int, default=10, metavar='N', help='l
 
 # hyper-parameters for Fix-Match
 parser.add_argument('--lambda-u', default=1, type=float, help='Coefficient of Unlabeled Loss')
-parser.add_argument('--threshold', default=0.90, type=float, help='Pseudo Label Threshold')
+parser.add_argument('--threshold', default=0.95, type=float, help='Pseudo Label Threshold')
 parser.add_argument('--mu', default=10, type=int, help='coefficient of unlabeled batch size')
 parser.add_argument('--nesterov', action='store_true', default=True, help='use nesterov momentum')
 
@@ -245,7 +248,7 @@ def main():
         print('validation_loader done')
 
         # Set optimizer
-        optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay= 0.001)
+        optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay= args.weightDecay, momentum=args.momentum, nesterov=args.nesterov)
 
         # INSTANTIATE LOSS CLASS
         train_criterion = SemiLoss()
@@ -273,13 +276,13 @@ def main():
                 else:
                     print(args.name + '_Not In NSML{}'.format(epoch))
             
-            """
+            
             if (epoch + 1) % args.save_epoch == 0:
                 if IS_ON_NSML:
                     nsml.save(args.name + '_e{}'.format(epoch))
                 else:
                     print(args.name + '_Not In NSML{}'.format(epoch))
-            """
+            
 
             adjust_learning_rate(args, optimizer, epoch)
     

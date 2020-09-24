@@ -7,8 +7,10 @@ import torch.utils.model_zoo as model_zoo
 
 import math
 from collections import OrderedDict
-import re
 import torch.nn.functional as F
+import re
+
+# from efficientnet_pytorch import EfficientNet
 
 ######################################################################
 
@@ -108,11 +110,12 @@ class ClassBlock(nn.Module):
 # Define the ResNet18-based Model
 ######################################################################
 
-class Res18(nn.Module):
+"""
+class EfficientB4(nn.Module):
     def __init__(self, class_num):
-        super(Res18, self).__init__()
+        super(EfficientB4, self).__init__()
         fea_dim = 256
-        model_ft = models.resnet18(pretrained=True)
+        model_ft = EfficientNet.from_pretrained('efficientnet-b4', num_classes=fea_dim)
         model_ft.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         model_ft.fc = nn.Sequential()
         self.model = model_ft
@@ -135,19 +138,20 @@ class Res18(nn.Module):
         embed_fea = self.fc_embed(fea)
         pred = self.classifier(fea)
         return embed_fea, pred
-        
-class Res34(nn.Module):
+"""
+
+class Res101(nn.Module):
 
     def __init__(self, class_num):
-        super(Res34, self).__init__()
+        super(Res101, self).__init__()
         fea_dim = 256
-        model_ft = models.resnet34(pretrained=True)
+        model_ft = models.resnet101(pretrained=True)
         model_ft.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         model_ft.fc = nn.Sequential()
         self.model = model_ft
-        self.fc_embed = nn.Linear(512, fea_dim)
+        self.fc_embed = nn.Linear(2048, fea_dim)
         self.fc_embed.apply(weights_init_classifier)
-        self.classifier = ClassBlock(512, class_num)
+        self.classifier = ClassBlock(2048, class_num)
         self.classifier.apply(weights_init_classifier)
 
     def forward(self, x):

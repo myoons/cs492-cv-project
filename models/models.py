@@ -144,7 +144,7 @@ class Res50(nn.Module):
     def __init__(self, class_num):
         super(Res50, self).__init__()
         fea_dim = 256
-        model_ft = models.resnet50(pretrained=True)
+        model_ft = models.resnet50(pretrained=False)
         model_ft.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         model_ft.fc = nn.Sequential()
         self.model = model_ft

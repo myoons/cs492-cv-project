@@ -78,7 +78,7 @@ def split_ids(path, ratio):
 parser = argparse.ArgumentParser(description='Pytorch FixMatch Fashion Dataset Classify Alogrithm')
 parser.add_argument('--start_epoch', type=int, default=1, metavar='N', help='number of start epoch (default: 1)')
 parser.add_argument('--save_epoch', type=int, default=60, metavar='N', help='epoch per saving (default: 1)')
-parser.add_argument('--epochs', type=int, default=250, metavar='N', help='number of epochs to train (default: 300)')
+parser.add_argument('--epochs', type=int, default=200, metavar='N', help='number of epochs to train (default: 300)')
 
 # basic settings
 parser.add_argument('--name',default='Res', type=str, help='output model name')
@@ -89,8 +89,8 @@ parser.add_argument('--seed', type=int, default=123, help='random seed')
 
 # basic hyper-parameters
 parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
-parser.add_argument('--lr', type=float, default=1e-4, metavar='LR', help='learning rate')
-parser.add_argument('--weightDecay', type=float, default=4e-4, metavar='WD', help='weight decay')
+parser.add_argument('--lr', type=float, default=1e-3, metavar='LR', help='learning rate')
+parser.add_argument('--weightDecay', type=float, default=1e-4, metavar='WD', help='weight decay')
 parser.add_argument('--imResize', default=256, type=int, help='Img Resize')
 parser.add_argument('--imsize', default=224, type=int, help='Img Crop Size')
 
@@ -99,8 +99,8 @@ parser.add_argument('--log_interval', type=int, default=10, metavar='N', help='l
 
 # hyper-parameters for Fix-Match
 parser.add_argument('--lambda_u', default=1, type=float, help='Coefficient of Unlabeled Loss')
-parser.add_argument('--threshold', default=0.95, type=float, help='Pseudo Label Threshold')
-parser.add_argument('--mu', default=7, type=int, help='coefficient of unlabeled batch size')
+parser.add_argument('--threshold', default=0.90, type=float, help='Pseudo Label Threshold')
+parser.add_argument('--mu', default=3, type=int, help='coefficient of unlabeled batch size')
 parser.add_argument('--nesterov', action='store_true', default=True, help='use nesterov momentum')
 
 ### DO NOT MODIFY THIS BLOCK ###
@@ -174,7 +174,7 @@ def main():
     set_seed(args)
 
     # Set model
-    model = Res50(NUM_CLASSES)
+    model = Res34(NUM_CLASSES)
     model.to(args.device)
     model.eval()
 
@@ -224,12 +224,12 @@ def main():
         unlabel_weak_loader = torch.utils.data.DataLoader(
         SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids,
                             transform=WA),
-                            batch_size=args.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+                            batch_size=args.batchsize*args.mu, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         
         unlabel_strong_loader = torch.utils.data.DataLoader(
         SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids,
                             transform=SA),
-                            batch_size=args.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+                            batch_size=args.batchsize*args.mu, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
 
         print('unlabel_loader done')    
 
@@ -242,7 +242,7 @@ def main():
                                   transforms.RandomVerticalFlip(),
                                   transforms.ToTensor(),
                                   transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-                               batch_size=args.batchsize, shuffle=False, num_workers=0, pin_memory=True, drop_last=False)
+                               batch_size=args.batchsize*args.mu, shuffle=False, num_workers=0, pin_memory=True, drop_last=False)
         print('validation_loader done')
 
         # Set optimizer
@@ -303,57 +303,70 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
 
     model.train()
 
-    unlabel_loader = zip(unlabel_weak_loader, unlabel_strong_loader)
+    unlabel_weak_iter = iter(unlabel_weak_loader)
+    unlabel_strong_iter = iter(unlabel_strong_loader)
+    labeled_train_iter = iter(label_loader)
 
-    for label_idx, data_x in enumerate(label_loader):
-        
+    for batch_idx in range(len(label_loader)):
+
         optimizer.zero_grad()
 
-        inputs_x, targets_x = data_x
-        batchSize = inputs_x.shape[0]
+        try:
+            data = labeled_train_iter.next()
+            inputs_x, targets_x = data
+        except:
+            labeled_train_iter = iter(label_loader)
+            data = labeled_train_iter.next()
+            inputs_x, targets_x = data
+        
+        try:
+            data_u_w = unlabel_weak_iter.next()
+            _, inputs_u_w = data_u_w
+            print('data_u_w', data_u_w.size())
+
+        except:
+            unlabel_weak_iter = iter(unlabel_weak_iter)
+            data_u_w = unlabel_weak_iter.next()
+            _, inputs_u_w = data_u_w
+
+        try:
+            data_u_s = unlabel_strong_iter.next()
+            _, inputs_u_s = data_u_s
+        except:
+            unlabel_strong_iter = iter(unlabel_strong_loader)
+            data_u_s = unlabel_strong_iter.next()
+            _, inputs_u_s = data_u_s
+
+        labelBatchSize = inputs_x.shape[0]
+        unlabelBatchSize = inputs_u_w.shape[0]
+
         targets_org = targets_x
 
         targets_x = targets_x.to(args.device)
         inputs_x = inputs_x.to(args.device)
 
         logits_x = model(inputs_x)
-
         loss_x = label_criterion(args, logits_x, targets_x)
 
-        loss = loss_x
+        inputs_u_w = inputs_u_w.to(args.device)
+        inputs_u_s = inputs_u_s.to(args.device)
 
-        losses.update(loss.item(), batchSize)
-        losses_x.update(loss_x.item(), batchSize)
-        losses_curr.update(loss.item(), batchSize)
-        losses_x_curr.update(loss_x.item(), batchSize)
+        logits_u_w = model(inputs_u_w)
+        logits_u_s = model(inputs_u_s)
+
+        loss_un = unlabel_criterion(args, logits_u_s, logits_u_w)
+
+        loss = loss_x + args.lambda_u * loss_un
+
+        losses.update(loss.item(), labelBatchSize)
+        losses_curr.update(loss.item(), labelBatchSize)
+        losses_x.update(loss_x.item(), labelBatchSize)
+        losses_x_curr.update(loss_x.item(), labelBatchSize)
+        losses_un.update(loss_un.item(), unlabelBatchSize)
+        losses_un_curr.update(loss_un.item(), unlabelBatchSize)
 
         loss.backward()
         optimizer.step()
-
-    for unlabel_idx, (data_u_w, data_u_s) in enumerate(unlabel_loader):
-        if unlabel_idx < args.mu : 
-            optimizer.zero_grad()
-
-            _, inputs_u_w = data_u_w
-            _, inputs_u_s = data_u_s
-
-            inputs_u_w = inputs_u_w.to(args.device)
-            inputs_u_s = inputs_u_s.to(args.device)
-
-            targets_u = model(inputs_u_w)
-            logits_u = model(inputs_u_s)
-
-            loss_un = unlabel_criterion(args, logits_u, targets_u)
-
-            loss = loss_un
-                
-            losses.update(loss.item(), batchSize)
-            losses_un.update(loss_un.item(), batchSize)
-            losses_curr.update(loss.item(), batchSize)
-            losses_un_curr.update(loss_un.item(), batchSize)
-
-            loss.backward()
-            optimizer.step()
     
     with torch.no_grad():
         # compute guessed labels of unlabel samples
@@ -367,10 +380,9 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
 
     acc_top1b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=1)*100
     acc_top5b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=5)*100    
-    acc_top1.update(torch.as_tensor(acc_top1b), batchSize)        
-    acc_top5.update(torch.as_tensor(acc_top5b), batchSize)   
+    acc_top1.update(torch.as_tensor(acc_top1b), labelBatchSize)        
+    acc_top5.update(torch.as_tensor(acc_top5b), labelBatchSize)   
 
-        
     global_step += 1
         
     return losses.avg, losses_x.avg, losses_un.avg, acc_top1.avg, acc_top5.avg

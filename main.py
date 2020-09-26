@@ -174,7 +174,7 @@ def main():
     set_seed(args)
 
     # Set model
-    model = Res34(NUM_CLASSES)
+    model = Res50(NUM_CLASSES)
     model.to(args.device)
     model.eval()
 
@@ -320,42 +320,44 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
 
         loss_x = label_criterion(args, logits_x, targets_x)
 
-        for i in range(args.mu) :
-            
-            loss_un = 0
+        loss = loss_x
 
-            for unlabel_idx, (data_u_w, data_u_s) in enumerate(unlabel_loader):
-                
-                print(unlabel_idx, data_u_w)
-
-                _, inputs_u_w = data_u_w
-                _, inputs_u_s = data_u_s
-
-                inputs_u_w = inputs_u_w.to(args.device)
-                inputs_u_s = inputs_u_s.to(args.device)
-
-                targets_u = model(inputs_u_w)
-                logits_u = model(inputs_u_s)
-
-                tempLoss_un = unlabel_criterion(args, logits_u, targets_u)
-                loss_un += tempLoss_un
-
-        loss = loss_x + args.lambda_u * (loss_un/args.mu)
-            
         losses.update(loss.item(), batchSize)
         losses_x.update(loss_x.item(), batchSize)
-        losses_un.update(loss_un.item(), batchSize)
-
         losses_curr.update(loss.item(), batchSize)
         losses_x_curr.update(loss_x.item(), batchSize)
-        losses_un_curr.update(loss_un.item(), batchSize)
 
         loss.backward()
         optimizer.step()
-            
-        with torch.no_grad():
-            # compute guessed labels of unlabel samples
-            pred_x1 = model(inputs_x) 
+
+    for unlabel_idx, (data_u_w, data_u_s) in enumerate(unlabel_loader):
+        if unlabel_idx < args.mu : 
+            optimizer.zero_grad()
+
+            _, inputs_u_w = data_u_w
+            _, inputs_u_s = data_u_s
+
+            inputs_u_w = inputs_u_w.to(args.device)
+            inputs_u_s = inputs_u_s.to(args.device)
+
+            targets_u = model(inputs_u_w)
+            logits_u = model(inputs_u_s)
+
+            loss_un = unlabel_criterion(args, logits_u, targets_u)
+
+            loss = loss_un
+                
+            losses.update(loss.item(), batchSize)
+            losses_un.update(loss_un.item(), batchSize)
+            losses_curr.update(loss.item(), batchSize)
+            losses_un_curr.update(loss_un.item(), batchSize)
+
+            loss.backward()
+            optimizer.step()
+    
+    with torch.no_grad():
+        # compute guessed labels of unlabel samples
+        pred_x1 = model(inputs_x) 
 
         if IS_ON_NSML and global_step % args.log_interval == 0:
             nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_un_curr.avg)
@@ -363,12 +365,13 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
             losses_x_curr.reset()
             losses_un_curr.reset()
 
-        acc_top1b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=1)*100
-        acc_top5b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=5)*100    
-        acc_top1.update(torch.as_tensor(acc_top1b), batchSize)        
-        acc_top5.update(torch.as_tensor(acc_top5b), batchSize)   
+    acc_top1b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=1)*100
+    acc_top5b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=5)*100    
+    acc_top1.update(torch.as_tensor(acc_top1b), batchSize)        
+    acc_top5.update(torch.as_tensor(acc_top5b), batchSize)   
 
-        global_step += 1
+        
+    global_step += 1
         
     return losses.avg, losses_x.avg, losses_un.avg, acc_top1.avg, acc_top5.avg
 

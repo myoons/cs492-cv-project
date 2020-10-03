@@ -26,9 +26,9 @@ import torch.nn.functional as F
 
 from utils.Transform import TransformFix
 from utils.ImageDataLoader import SimpleImageLoader
-from utils.preTrain import set_seed, SemiLoss, LabelLoss, UnLabelLoss ,adjust_learning_rate, AverageMeter
+from utils.preTrain import set_seed, SemiLoss,adjust_learning_rate, AverageMeter
 
-from models.models import Res50, Res34
+from models.models import MyCNN, Res18
 
 import nsml
 from nsml import DATASET_PATH, IS_ON_NSML
@@ -89,7 +89,7 @@ parser.add_argument('--seed', type=int, default=123, help='random seed')
 
 # basic hyper-parameters
 parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
-parser.add_argument('--lr', type=float, default=1e-3, metavar='LR', help='learning rate')
+parser.add_argument('--lr', type=float, default=1e-4, metavar='LR', help='learning rate')
 parser.add_argument('--weightDecay', type=float, default=1e-4, metavar='WD', help='weight decay')
 parser.add_argument('--imResize', default=256, type=int, help='Img Resize')
 parser.add_argument('--imsize', default=224, type=int, help='Img Crop Size')
@@ -99,8 +99,8 @@ parser.add_argument('--log_interval', type=int, default=10, metavar='N', help='l
 
 # hyper-parameters for Fix-Match
 parser.add_argument('--lambda_u', default=1, type=float, help='Coefficient of Unlabeled Loss')
-parser.add_argument('--threshold', default=0.90, type=float, help='Pseudo Label Threshold')
-parser.add_argument('--mu', default=3, type=int, help='coefficient of unlabeled batch size')
+parser.add_argument('--threshold', default=0.9, type=float, help='Pseudo Label Threshold')
+parser.add_argument('--mu', default=5, type=int, help='coefficient of unlabeled batch size')
 parser.add_argument('--nesterov', action='store_true', default=True, help='use nesterov momentum')
 
 ### DO NOT MODIFY THIS BLOCK ###
@@ -174,9 +174,8 @@ def main():
     set_seed(args)
 
     # Set model
-    model = Res34(NUM_CLASSES)
+    model = MyCNN(NUM_CLASSES)
     model.to(args.device)
-    model.eval()
 
     # If GPU is available
     if use_gpu :
@@ -199,9 +198,6 @@ def main():
     ################################
 
     if args.mode == 'train':
-
-        # Train Model
-        model.train()
 
         # Set dataloader
         train_ids, val_ids, unl_ids = split_ids(os.path.join(DATASET_PATH, 'train/train_label'), 0.2)
@@ -246,21 +242,20 @@ def main():
         print('validation_loader done')
 
         # Set optimizer
-        optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay= args.weightDecay, momentum=args.momentum, nesterov=args.nesterov)
+        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=5e-4)
+        # optimizer = optim.Adagrad(model.parameters(), lr=args.lr, weight_decay=5e-4)
 
         # INSTANTIATE LOSS CLASS
-        label_criterion = LabelLoss()
-        unlabel_criterion = UnLabelLoss()
+        criterion = SemiLoss()
 
         # Train and Validation 
         best_acc = -1
         print('start training')
 
-        model.zero_grad()
         
         for epoch in range(args.start_epoch, args.epochs + 1):
 
-            loss, loss_x, loss_u, avg_top1, avg_top5 = train(args, label_loader,  unlabel_weak_loader, unlabel_strong_loader, model, label_criterion, unlabel_criterion, optimizer, epoch, use_gpu)
+            loss, loss_x, loss_u, avg_top1, avg_top5 = train(args, label_loader,  unlabel_weak_loader, unlabel_strong_loader, model, criterion, optimizer, epoch, use_gpu)
             print('epoch {:03d}/{:03d} finished, learning_rate : {}, loss: {:.3f}, loss_x: {:.3f}, loss_un: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%'.format(epoch, args.epochs, optimizer.param_groups[0]["lr"], loss, loss_x, loss_u, avg_top1, avg_top5))
 
             
@@ -286,8 +281,10 @@ def main():
             adjust_learning_rate(args, optimizer, epoch)
     
 
-def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model, label_criterion, unlabel_criterion, optimizer, epoch, use_gpu):
+def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model, criterion, optimizer, epoch, use_gpu):
     global global_step
+
+    model.train()
 
     losses = AverageMeter()
     losses_x = AverageMeter()
@@ -301,14 +298,13 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
     acc_top1 = AverageMeter()
     acc_top5 = AverageMeter()
 
-    model.train()
-
     unlabel_weak_iter = iter(unlabel_weak_loader)
     unlabel_strong_iter = iter(unlabel_strong_loader)
     labeled_train_iter = iter(label_loader)
 
+    trainLoss = 0
+    
     for batch_idx in range(len(label_loader)):
-
         optimizer.zero_grad()
 
         try:
@@ -342,21 +338,17 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
 
         targets_org = targets_x
 
-        targets_x = targets_x.to(args.device)
         inputs_x = inputs_x.to(args.device)
-
-        logits_x = model(inputs_x)
-        loss_x = label_criterion(args, logits_x, targets_x)
-
+        targets_x = targets_x.to(args.device)
         inputs_u_w = inputs_u_w.to(args.device)
         inputs_u_s = inputs_u_s.to(args.device)
 
+        logits_x = model(inputs_x)
         logits_u_w = model(inputs_u_w)
         logits_u_s = model(inputs_u_s)
-
-        loss_un = unlabel_criterion(args, logits_u_s, logits_u_w)
-
-        loss = loss_x + args.lambda_u * loss_un
+            
+        loss_x, loss_un, unlabel_weight = criterion(args, logits_x, targets_x, logits_u_s, logits_u_w)
+        loss = loss_x + unlabel_weight * loss_un
 
         losses.update(loss.item(), labelBatchSize)
         losses_curr.update(loss.item(), labelBatchSize)
@@ -367,10 +359,10 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
 
         loss.backward()
         optimizer.step()
-    
-    with torch.no_grad():
+
+        with torch.no_grad():
         # compute guessed labels of unlabel samples
-        pred_x1 = model(inputs_x) 
+            pred_x1 = model(inputs_x) 
 
         if IS_ON_NSML and global_step % args.log_interval == 0:
             nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_un_curr.avg)
@@ -378,12 +370,12 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
             losses_x_curr.reset()
             losses_un_curr.reset()
 
-    acc_top1b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=1)*100
-    acc_top5b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=5)*100    
-    acc_top1.update(torch.as_tensor(acc_top1b), labelBatchSize)        
-    acc_top5.update(torch.as_tensor(acc_top5b), labelBatchSize)   
+        acc_top1b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=1)*100
+        acc_top5b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=5)*100    
+        acc_top1.update(torch.as_tensor(acc_top1b), labelBatchSize)        
+        acc_top5.update(torch.as_tensor(acc_top5b), labelBatchSize)   
 
-    global_step += 1
+        global_step += 1
         
     return losses.avg, losses_x.avg, losses_un.avg, acc_top1.avg, acc_top5.avg
 

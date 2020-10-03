@@ -25,7 +25,8 @@ class AverageMeter(object):
 
 def adjust_learning_rate(args, optimizer, epoch):
     """Decay Learning Rate"""
-    lr = args.lr * math.cos((7 *math.pi * epoch)/(args.epochs*16))
+    # lr = args.lr * math.cos((7 *math.pi * epoch)/(args.epochs*16))
+    lr = args.lr * (0.1 ** (epoch // 30))
     args.lr = lr
     
     for param_group in optimizer.param_groups :
@@ -46,13 +47,12 @@ class SemiLoss(object):
 
         Lx = F.cross_entropy(logits_x, targets_x, reduction='mean')
 
-        with torch.no_grad() :
-            pseudo_label = torch.softmax(logits_u_w.detach(), dim=-1)
-            max_probs, targets_u = torch.max(pseudo_label, dim=-1)
-            mask = max_probs.ge(args.threshold).float()
+        pseudo_label = torch.softmax(logits_u_w.detach_() , dim=-1)
+        max_probs, targets_u = torch.max(pseudo_label, dim=-1)
+        mask = max_probs.ge(args.threshold).float()
 
         Lu = (F.cross_entropy(logits_u_s, targets_u, reduction='none') * mask).mean()
-
+        
         return Lx, Lu, args.lambda_u
 
 class LabelLoss(object):

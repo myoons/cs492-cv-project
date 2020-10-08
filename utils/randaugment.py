@@ -137,7 +137,6 @@ def Augments():
             (Equalize, None, None), #
             (Posterize, 4, 4), #
             (Rotate, 30, 0), #
-            (Cutout, 0.2, 0), #
             (Solarize, 256, 0), #
             (Sharpness, 0.9, 0.05),
             (ShearX, 0.3, 0),

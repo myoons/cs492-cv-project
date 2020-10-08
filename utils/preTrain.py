@@ -65,10 +65,10 @@ class LabelLoss(object):
 class UnLabelLoss(object):
     def __call__(self, args, logits_u_s, logits_u_w):
         
-        pseudo_label = torch.softmax(logits_u_w.detach(), dim=-1)
+        pseudo_label = torch.softmax(logits_u_w.detach_() , dim=-1)
         max_probs, targets_u = torch.max(pseudo_label, dim=-1)
         mask = max_probs.ge(args.threshold).float()
 
         Lu = (F.cross_entropy(logits_u_s, targets_u, reduction='none') * mask).mean()
 
-        return Lu
+        return Lu, args.lambda_u

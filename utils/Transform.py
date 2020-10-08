@@ -9,13 +9,13 @@ import torch
 from utils.randaugment import RandAugment
 
 class TransformFix(object):
-    def __init__(self, imResize, imsize, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
+    def __init__(self, imResize, imsize, mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]):
         
         self.none = transforms.Compose([
             transforms.Resize(imResize),
             transforms.CenterCrop(imsize),
             transforms.ToTensor(),
-            # transforms.Normalize(mean=mean, std=std),
+            transforms.Normalize(mean=mean, std=std),
             ])
         
         self.weak = transforms.Compose([
@@ -24,7 +24,7 @@ class TransformFix(object):
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
             transforms.ToTensor(),
-            # transforms.Normalize(mean=mean, std=std),
+            transforms.Normalize(mean=mean, std=std),
             ])
 
         self.strong = transforms.Compose([
@@ -32,9 +32,9 @@ class TransformFix(object):
             transforms.CenterCrop(imsize),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
-            RandAugment(n=2, m=8),
+            RandAugment(n=2, m=10),
             transforms.ToTensor(),
-            # transforms.Normalize(mean=mean, std=std)
+            transforms.Normalize(mean=mean, std=std)
             ])
     
     def __call__(self):

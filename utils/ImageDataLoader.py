@@ -4,21 +4,15 @@ import os.path
 import torch.utils.data
 import torchvision.transforms as transforms
 import numpy as np
+
 import torch
+import torchvision
 
 def default_image_loader(path):
     return Image.open(path).convert('RGB')
 
-class TransformTwice:
-    def __init__(self, transform):
-        self.transform = transform
-    def __call__(self, inp):
-        out1 = self.transform(inp)
-        out2 = self.transform(inp)
-        return out1, out2    
-    
 class SimpleImageLoader(torch.utils.data.Dataset):
-    def __init__(self, rootdir, split, ids=None, transform=None, loader=default_image_loader):
+    def __init__(self, rootdir, split, ids=None, transformWeak=None, transformStrong=None, loader=default_image_loader):
         if split == 'test':
             self.impath = os.path.join(rootdir, 'test_data')
             meta_file = os.path.join(self.impath, 'test_meta.txt')
@@ -44,8 +38,8 @@ class SimpleImageLoader(torch.utils.data.Dataset):
                         if split == 'train' or split == 'val':
                             imclasses.append(int(label))
 
-        self.transform = transform
-        self.TransformTwice = TransformTwice(transform)
+        self.transformWeak = transformWeak
+        self.transformStrong = transformStrong
         self.loader = loader
         self.split = split
         self.imnames = imnames
@@ -55,18 +49,23 @@ class SimpleImageLoader(torch.utils.data.Dataset):
         filename = self.imnames[index]
         img = self.loader(os.path.join(self.impath, filename))
         
-        if self.split == 'test':
-            if self.transform is not None:
-                img = self.transform(img)
+        if self.split == 'test': # Test
+            if self.transformWeak is not None:
+                img = self.transformWeak(img)
             return img
-        elif self.split != 'unlabel':
-            if self.transform is not None:
-                img = self.transform(img)
+        elif self.split != 'unlabel': # Labeled
+            if self.transformWeak is not None:
+                img = self.transformWeak(img)
             label = self.imclasses[index]
+
             return img, label
-        else:        
-            img1, img2 = self.TransformTwice(img)
-            return img1, img2
+        else:  # Unlabeled
+
+            weakAugmented = self.transformWeak(img)
+            strongAugmented = self.transformStrong(img)
+            # weakAugmentedTwo = self.transformWeak(img)
+
+            return weakAugmented, strongAugmented
         
     def __len__(self):
         return len(self.imnames)

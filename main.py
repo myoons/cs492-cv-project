@@ -13,6 +13,8 @@ import shutil
 import random
 import time
 
+import csv
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -26,7 +28,7 @@ import torch.nn.functional as F
 
 from utils.Transform import TransformFix
 from utils.ImageDataLoader import SimpleImageLoader
-from utils.preTrain import set_seed, SemiLoss,adjust_learning_rate, AverageMeter
+from utils.preTrain import set_seed, SemiLoss, adjust_learning_rate, AverageMeter
 
 from models.models import MyCNN, Res18
 
@@ -48,8 +50,7 @@ def top_n_accuracy_score(y_true, y_prob, n=5, normalize=True):
     else:
         return counter
         
-# For Loading 
-def split_ids(path, ratio):
+def split_ids(path, ratio): # For Loading 
     with open(path) as f:
         ids_l = []
         ids_u = []
@@ -81,16 +82,16 @@ parser.add_argument('--save_epoch', type=int, default=60, metavar='N', help='epo
 parser.add_argument('--epochs', type=int, default=200, metavar='N', help='number of epochs to train (default: 300)')
 
 # basic settings
-parser.add_argument('--name',default='Res', type=str, help='output model name')
+parser.add_argument('--name',default='Myoons', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default=0, type=int ,help='gpu_ids: e.g. 0  0,1,2  0,2')
 parser.add_argument('--n_gpu',default=0, type=int,help='number of gpus using')
 parser.add_argument('--batchsize', default=53, type=int, help='batchsize')
-parser.add_argument('--seed', type=int, default=123, help='random seed')
+parser.add_argument('--seed', type=int, default=777, help='random seed')
 
 # basic hyper-parameters
 parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
 parser.add_argument('--lr', type=float, default=1e-4, metavar='LR', help='learning rate')
-parser.add_argument('--weightDecay', type=float, default=1e-4, metavar='WD', help='weight decay')
+parser.add_argument('--weightDecay', type=float, default=5e-4, metavar='WD', help='weight decay')
 parser.add_argument('--imResize', default=256, type=int, help='Img Resize')
 parser.add_argument('--imsize', default=224, type=int, help='Img Crop Size')
 
@@ -98,9 +99,9 @@ parser.add_argument('--imsize', default=224, type=int, help='Img Crop Size')
 parser.add_argument('--log_interval', type=int, default=10, metavar='N', help='logging training status')
 
 # hyper-parameters for Fix-Match
-parser.add_argument('--lambda_u', default=1, type=float, help='Coefficient of Unlabeled Loss')
+parser.add_argument('--lambda_u', default=10, type=float, help='Coefficient of Unlabeled Loss')
 parser.add_argument('--threshold', default=0.9, type=float, help='Pseudo Label Threshold')
-parser.add_argument('--mu', default=5, type=int, help='coefficient of unlabeled batch size')
+parser.add_argument('--mu', default=6, type=int, help='coefficient of unlabeled batch size')
 parser.add_argument('--nesterov', action='store_true', default=True, help='use nesterov momentum')
 
 ### DO NOT MODIFY THIS BLOCK ###
@@ -109,7 +110,7 @@ parser.add_argument('--pause', type=int, default=0)
 parser.add_argument('--mode', type=str, default='train')
 ################################
 
-### NSML functions
+################################ NSML functions ################################
 def _infer(model, root_path, test_loader=None):
     if test_loader is None:
         test_loader = torch.utils.data.DataLoader(
@@ -152,8 +153,10 @@ def bind_nsml(model):
         return _infer(model, root_path)
 
     nsml.bind(save=save, load=load, infer=infer)
+################################ Don't Touch It ################################
 
 def main():
+
     global args, global_step
     args = parser.parse_args()
     global_step = 0
@@ -176,6 +179,12 @@ def main():
     # Set model
     model = MyCNN(NUM_CLASSES)
     model.to(args.device)
+    model.eval()
+
+    # Print number of parameters
+    parameters = filter(lambda p: p.requires_grad, model.parameters())
+    n_parameters = sum([p.data.nelement() for p in model.parameters()])
+    print('  + Number of params: {}'.format(n_parameters))
 
     # If GPU is available
     if use_gpu :
@@ -202,48 +211,34 @@ def main():
         # Set dataloader
         train_ids, val_ids, unl_ids = split_ids(os.path.join(DATASET_PATH, 'train/train_label'), 0.2)
         augmentation = TransformFix(args.imResize, args.imsize)
-        WA, SA = augmentation()
+        NA, WA, SA = augmentation()
 
         print('found {} train, {} validation and {} unlabeled images'.format(len(train_ids), len(val_ids), len(unl_ids)))
         label_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'train', train_ids,
-                              transform=transforms.Compose([
-                                  transforms.Resize(args.imResize),
-                                  transforms.RandomResizedCrop(args.imsize),
-                                  transforms.RandomHorizontalFlip(),
-                                  transforms.RandomVerticalFlip(),
-                                  transforms.ToTensor(),
-                                  transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-                                batch_size=args.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+                              transformWeak=WA,
+                              transformStrong=SA),
+                            batch_size=args.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('label_loader done')
 
-        unlabel_weak_loader = torch.utils.data.DataLoader(
-        SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids,
-                            transform=WA),
-                            batch_size=args.batchsize*args.mu, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
-        
-        unlabel_strong_loader = torch.utils.data.DataLoader(
-        SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids,
-                            transform=SA),
+        unlabel_loader = torch.utils.data.DataLoader(
+            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids,
+                              transformWeak=WA,
+                              transformStrong=SA),
                             batch_size=args.batchsize*args.mu, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
 
         print('unlabel_loader done')    
 
         validation_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'val', val_ids,
-                               transform=transforms.Compose([
-                                  transforms.Resize(args.imResize),
-                                  transforms.RandomResizedCrop(args.imsize),
-                                  transforms.RandomHorizontalFlip(),
-                                  transforms.RandomVerticalFlip(),
-                                  transforms.ToTensor(),
-                                  transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-                               batch_size=args.batchsize*args.mu, shuffle=False, num_workers=0, pin_memory=True, drop_last=False)
+                               transformWeak=WA,
+                               transformStrong=SA),
+                            batch_size=args.batchsize*args.mu, shuffle=False, num_workers=0, pin_memory=True, drop_last=False)
         print('validation_loader done')
 
         # Set optimizer
-        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=5e-4)
-        # optimizer = optim.Adagrad(model.parameters(), lr=args.lr, weight_decay=5e-4)
+        # optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.weightDecay, momentum=args.momentum, nesterov=args.nesterov)
+        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weightDecay)
 
         # INSTANTIATE LOSS CLASS
         criterion = SemiLoss()
@@ -255,7 +250,7 @@ def main():
         
         for epoch in range(args.start_epoch, args.epochs + 1):
 
-            loss, loss_x, loss_u, avg_top1, avg_top5 = train(args, label_loader,  unlabel_weak_loader, unlabel_strong_loader, model, criterion, optimizer, epoch, use_gpu)
+            loss, loss_x, loss_u, avg_top1, avg_top5 = train(args, label_loader, unlabel_loader, model, criterion, optimizer, epoch, use_gpu)
             print('epoch {:03d}/{:03d} finished, learning_rate : {}, loss: {:.3f}, loss_x: {:.3f}, loss_un: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%'.format(epoch, args.epochs, optimizer.param_groups[0]["lr"], loss, loss_x, loss_u, avg_top1, avg_top5))
 
             
@@ -277,11 +272,11 @@ def main():
                 else:
                     print(args.name + '_Not In NSML{}'.format(epoch))
             
-
-            adjust_learning_rate(args, optimizer, epoch)
+            if epoch > 80 : 
+                adjust_learning_rate(args, optimizer, epoch)
     
 
-def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model, criterion, optimizer, epoch, use_gpu):
+def train(args, label_loader, unlabel_loader, model, criterion, optimizer, epoch, use_gpu):
     global global_step
 
     model.train()
@@ -298,13 +293,13 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
     acc_top1 = AverageMeter()
     acc_top5 = AverageMeter()
 
-    unlabel_weak_iter = iter(unlabel_weak_loader)
-    unlabel_strong_iter = iter(unlabel_strong_loader)
+    unlabel_train_iter = iter(unlabel_loader)
     labeled_train_iter = iter(label_loader)
 
     trainLoss = 0
     
     for batch_idx in range(len(label_loader)):
+
         optimizer.zero_grad()
 
         try:
@@ -316,22 +311,12 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
             inputs_x, targets_x = data
         
         try:
-            data_u_w = unlabel_weak_iter.next()
-            _, inputs_u_w = data_u_w
-            print('data_u_w', data_u_w.size())
-
+            data = unlabel_train_iter.next()
+            inputs_u_w, inputs_u_s = data
         except:
-            unlabel_weak_iter = iter(unlabel_weak_iter)
-            data_u_w = unlabel_weak_iter.next()
-            _, inputs_u_w = data_u_w
-
-        try:
-            data_u_s = unlabel_strong_iter.next()
-            _, inputs_u_s = data_u_s
-        except:
-            unlabel_strong_iter = iter(unlabel_strong_loader)
-            data_u_s = unlabel_strong_iter.next()
-            _, inputs_u_s = data_u_s
+            unlabel_train_iter = iter(unlabel_loader)
+            data = unlabel_train_iter.next()
+            inputs_u_w, inputs_u_s = data
 
         labelBatchSize = inputs_x.shape[0]
         unlabelBatchSize = inputs_u_w.shape[0]
@@ -346,10 +331,18 @@ def train(args, label_loader, unlabel_weak_loader, unlabel_strong_loader, model,
         logits_x = model(inputs_x)
         logits_u_w = model(inputs_u_w)
         logits_u_s = model(inputs_u_s)
-            
+        
         loss_x, loss_un, unlabel_weight = criterion(args, logits_x, targets_x, logits_u_s, logits_u_w)
-        loss = loss_x + unlabel_weight * loss_un
 
+        """
+        if epoch > 10 or loss_un.item() != 0 :
+            loss = unlabel_weight * loss_un
+        else :
+            loss = loss_x + unlabel_weight * loss_un
+        """
+
+        loss = loss_x + unlabel_weight * loss_un
+        
         losses.update(loss.item(), labelBatchSize)
         losses_curr.update(loss.item(), labelBatchSize)
         losses_x.update(loss_x.item(), labelBatchSize)

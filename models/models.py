@@ -4,6 +4,7 @@ from torch.nn import init
 from torchvision import models
 from torch.autograd import Variable
 import torch.utils.model_zoo as model_zoo
+import csv
 
 import math
 from collections import OrderedDict
@@ -111,50 +112,26 @@ class Res18(nn.Module):
 
     def __init__(self, class_num):
         super(Res18, self).__init__()
-        fea_dim = 256
+        fea_dim = 265
         model_ft = models.resnet18(pretrained=False)
         model_ft.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         model_ft.fc = nn.Sequential()
         self.model = model_ft
-        self.classifier = ClassBlock(512, class_num)
+        self.classifier = ClassBlock(512, class_num, dropout=False)
         self.classifier.apply(weights_init_classifier)
 
     def forward(self, x):
-        x = self.model.conv1(x)
-        x = self.model.bn1(x)
-        x = self.model.relu(x)
-        x = self.model.maxpool(x)
-        x = self.model.layer1(x)
-        x = self.model.layer2(x)
-        x = self.model.layer3(x)
-        x = self.model.layer4(x)
-        x = self.model.avgpool(x)
-        fea = x.view(x.size(0), -1)
-        pred = self.classifier(fea)
-        return pred
-class Res50(nn.Module):
 
-    def __init__(self, class_num):
-        super(Res50, self).__init__()
-        fea_dim = 256
-        model_ft = models.resnet50(pretrained=False)
-        model_ft.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        model_ft.fc = nn.Sequential()
-        self.model = model_ft
-        self.classifier = ClassBlock(2048, class_num)
-        self.classifier.apply(weights_init_classifier)
-
-    def forward(self, x):
-        x = self.model.conv1(x)
-        x = self.model.bn1(x)
-        x = self.model.relu(x)
-        x = self.model.maxpool(x)
-        x = self.model.layer1(x)
-        x = self.model.layer2(x)
-        x = self.model.layer3(x)
-        x = self.model.layer4(x)
-        x = self.model.avgpool(x)
-        fea = x.view(x.size(0), -1)
+        x = self.model.conv1(x) # .torch.Size([53, 64, 112, 112])
+        x = self.model.bn1(x) # torch.Size([53, 64, 112, 112])
+        x = self.model.relu(x) # torch.Size([53, 64, 112, 112])
+        x = self.model.maxpool(x) # torch.Size([53, 64, 56, 56])
+        x = self.model.layer1(x) # torch.Size([53, 64, 56, 56])
+        x = self.model.layer2(x) # torch.Size([53, 128, 28, 28])
+        x = self.model.layer3(x) # torch.Size([53, 256, 14, 14])
+        x = self.model.layer4(x) # torch.Size([53, 512, 7, 7])
+        x = self.model.avgpool(x) # torch.Size([53, 512, 1, 1])
+        fea = x.view(x.size(0), -1) # torch.Size([53, 512])
         pred = self.classifier(fea)
         return pred
 
@@ -227,64 +204,68 @@ class MyCNN(nn.Module):
     def __init__(self, class_num):
         super(MyCNN, self).__init__()
 
-        self.conv1 = nn.Conv2d(3, 20, kernel_size=3, stride=1, padding=1)
-        self.batch1 = nn.BatchNorm2d(20)
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=10, kernel_size=3,stride=1)
+        self.batchConv1 = nn.BatchNorm2d(10)
 
-        self.conv2 = nn.Conv2d(20, 40, kernel_size=3, stride=1, padding=1)
-        self.batch2 = nn.BatchNorm2d(40)
+        self.conv2 = nn.Conv2d(in_channels=10, out_channels=20, kernel_size=3, stride=1)
+        self.batchConv2 = nn.BatchNorm2d(20)
 
-        self.conv3 = nn.Conv2d(40, 80, kernel_size=3, stride=1, padding=1)
-        self.batch3 = nn.BatchNorm2d(80)
+        self.conv3 = nn.Conv2d(in_channels=20, out_channels=40, kernel_size=3, stride=1)
+        self.batchConv3 = nn.BatchNorm2d(40)
 
-        self.conv4 = nn.Conv2d(80, 160, kernel_size=3, stride=1, padding=1)
-        self.batch4 = nn.BatchNorm2d(160)
+        self.conv4 = nn.Conv2d(in_channels=40, out_channels=80, kernel_size=3, stride=1)
+        self.batchConv4 = nn.BatchNorm2d(80)
 
-        self.conv5 = nn.Conv2d(160, 320, kernel_size=3, stride=1, padding=1)
-        self.batch5 = nn.BatchNorm2d(320)
+        self.conv5 = nn.Conv2d(in_channels=80, out_channels=160, kernel_size=3, stride=1)
+        self.batchConv5 = nn.BatchNorm2d(160)
 
-        self.conv6 = nn.Conv2d(320, 640, kernel_size=3, stride=1, padding=1)
-        self.batch6 = nn.BatchNorm2d(640)
+        """
+        self.conv6 = nn.Conv2d(640, 1280, kernel_size=3, stride=1)
+        self.batchConv6 = nn.BatchNorm2d(1280)
+        """
 
-        self.conv7 = nn.Conv2d(640, 1280, kernel_size=3, stride=1, padding=1)
-        self.batch7 = nn.BatchNorm2d(1280)
-
-        self.maxPool = nn.MaxPool2d(2)
+        self.maxPool = nn.MaxPool2d(kernel_size=(2,2), stride=(2,2))
         self.relu = nn.ReLU()
+        """
+        self.fc1 = nn.Linear(4000, 2000)
+        self.batchFc1 = nn.BatchNorm1d(2000)
+        self.fc2 = nn.Linear(2000, 530)
+        self.batchFc2 = nn.BatchNorm1d(530)
+        self.fc3 = nn.Linear(530,class_num)
+        """
 
-        self.fc1 = nn.Linear(5760, 2048)
-        self.batchfc1 = nn.BatchNorm1d(2048)
-        self.fc2 = nn.Linear(2048, 1024)
-        self.batchfc2 = nn.BatchNorm1d(1024)
-        self.fc3 = nn.Linear(1024,class_num)
-        
+        self.fc1 = nn.Linear(11520, 4000)
+        self.batchFc1 = nn.BatchNorm1d(4000)
+        self.fc2 = nn.Linear(4000, 530)
+        self.batchFc2 = nn.BatchNorm1d(530)
+        self.fc3 = nn.Linear(530,class_num)
+
         nn.init.kaiming_normal_(self.conv1.weight)
         nn.init.kaiming_normal_(self.conv2.weight)
         nn.init.kaiming_normal_(self.conv3.weight)
         nn.init.kaiming_normal_(self.conv4.weight)
         nn.init.kaiming_normal_(self.conv5.weight)
-        nn.init.kaiming_normal_(self.conv6.weight)
-        nn.init.kaiming_normal_(self.conv7.weight)
+
         nn.init.kaiming_normal_(self.fc1.weight)
         nn.init.kaiming_normal_(self.fc2.weight)
         nn.init.kaiming_normal_(self.fc3.weight)
 
-        self.do = nn.Dropout(p=0.1)
-
     def forward(self, x):
         
-        batchSize = x.size(0)
-        # torch.Size([53, 3, 224, 224])
+        batchSize = x.size(0) # torch.Size([53, 3, 224, 224])
         
-        x = self.maxPool(self.relu(self.batch1(self.conv1(x))))
-        x = self.maxPool(self.relu(self.batch2(self.conv2(x))))
-        x = self.maxPool(self.relu(self.batch3(self.conv3(x))))
-        x = self.maxPool(self.relu(self.batch4(self.conv4(x))))
-        x = self.maxPool(self.relu(self.batch5(self.conv5(x))))
-        x = self.maxPool(self.relu(self.batch6(self.conv6(x))))
-
-        x = x.view(batchSize,-1)
-        x = self.do(x)
-        x = self.relu(self.batchfc1(self.fc1(x)))
-        x = self.relu(self.batchfc2(self.fc2(x)))
+        x = self.maxPool(self.relu(self.batchConv1(self.conv1(x)))) # torch.Size([53, 10, 111, 111])
+        x = self.maxPool(self.relu(self.batchConv2(self.conv2(x)))) # torch.Size([53, 20, 54, 54])
+        x = self.maxPool(self.relu(self.batchConv3(self.conv3(x)))) # torch.Size([53, 40, 26, 26])
+        x = self.maxPool(self.relu(self.batchConv4(self.conv4(x)))) # torch.Size([53, 80, 12, 12])
+        # x = self.maxPool(self.relu(self.batchConv5(self.conv5(x)))) # torch.Size([53, 160, 5, 5])
+        
+        x = x.view(batchSize,-1) # torch.Size([53, 4000])
+        
+        x = self.relu(self.batchFc1(self.fc1(x)))
+        torch.nn.Dropout(p=0.5)
+        x = self.relu(self.batchFc2(self.fc2(x)))
+        torch.nn.Dropout(p=0.5)
         out = self.fc3(x)
+        
         return out

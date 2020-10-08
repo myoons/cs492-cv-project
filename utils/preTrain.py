@@ -25,8 +25,8 @@ class AverageMeter(object):
 
 def adjust_learning_rate(args, optimizer, epoch):
     """Decay Learning Rate"""
-    # lr = args.lr * math.cos((7 *math.pi * epoch)/(args.epochs*16))
-    lr = args.lr * (0.1 ** (epoch // 30))
+    lr = args.lr * math.cos((7 *math.pi * epoch)/(args.epochs*16))
+    # lr = args.lr * (0.1 ** (epoch // 30))
     args.lr = lr
     
     for param_group in optimizer.param_groups :

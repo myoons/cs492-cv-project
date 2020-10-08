@@ -1,5 +1,8 @@
 import torch
 import shutil
+import nsml
+import numpy as np
+import os
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -160,3 +163,17 @@ def set_seed(args):
     torch.cuda.manual_seed(args.seed)
     if args.n_gpu > 0:
         torch.cuda.manual_seed_all(args.seed)
+
+
+def top_n_accuracy_score(y_true, y_prob, n=5, normalize=True):
+    num_obs, num_labels = y_prob.shape
+    idx = num_labels - n - 1
+    counter = 0
+    argsorted = np.argsort(y_prob, axis=1)
+    for i in range(num_obs):
+        if y_true[i] in argsorted[i, idx+1:]:
+            counter += 1
+    if normalize:
+        return counter * 1.0 / num_obs
+    else:
+        return counter

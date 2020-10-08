@@ -22,88 +22,77 @@ import torch.optim as optim
 import torchvision
 from torchvision import datasets, models, transforms
 
-from ImageDataLoader import SimpleImageLoader
+from dataset import get_dataset
 from models import Res18, Res50, Dense121, Res18_basic
+from utils import *
+from fixmatch import FixMatch
+
 
 import nsml
 from nsml import DATASET_PATH, IS_ON_NSML
-
-from fixmatch import FixMatch
 
 
 NUM_CLASSES = 265
 best_acc = 0
 
-def run_test(fixmatch, labeled_trainloader, unlabeled_trainloader):
+def run_test(fixmatch, args, labeled_trainloader, unlabeled_w_trainloader, unlabeled_s_trainloader, validation_loader, global_step):
+    global best_acc
+
     start_epoch = 0
     test_accs = []
 
     for epoch in range(fixmatch.args.start_epoch, fixmatch.args.epochs):
-        train_loss, train_loss_x, train_loss_u, mask_prob = fixmatch.train(
-            labeled_trainloader, unlabeled_trainloader,
-            ema_model, scheduler, epoch)
+        loss, loss_x, loss_u, avg_top1, avg_top5 = fixmatch.train(args, labeled_trainloader, unlabeled_w_trainloader, unlabeled_s_trainloader, global_step)
 
-        if fixmatch.args.no_progress:
-            logger.info("Epoch {}. train_loss: {:.4f}. train_loss_x: {:.4f}. train_loss_u: {:.4f}."
-                        .format(epoch+1, train_loss, train_loss_x, train_loss_u))
+        print('epoch {:03d}/{:03d} finished, loss: {:.3f}, loss_x: {:.3f}, loss_un: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%'.format(epoch, args.epochs, loss, loss_x, loss_u, avg_top1, avg_top5))
 
-        test_loss, test_acc = fixmatch.test(args, test_loader, test_model, epoch)
+        acc_top1, acc_top5 = fixmatch.validate(args, validation_loader, epoch)
+        is_best = acc_top1 > best_acc
+        best_acc = max(acc_top1, best_acc)
 
-        test_loss, test_acc = test(args, test_loader, test_model, epoch)
+        if is_best:
+            print('model achieved the best accuracy ({:.3f}%) - saving best checkpoint...'.format(best_acc))
+            if IS_ON_NSML:
+                nsml.save(args.name + '_best')
+            else:
+                torch.save(ema_model.state_dict(), os.path.join('runs', args.name + '_best'))
 
-        if fixmatch.args.local_rank in [-1, 0]:
-            writer.add_scalar('train/1.train_loss', train_loss, epoch)
-            writer.add_scalar('train/2.train_loss_x', train_loss_x, epoch)
-            writer.add_scalar('train/3.train_loss_u', train_loss_u, epoch)
-            writer.add_scalar('train/4.mask', mask_prob, epoch)
-            writer.add_scalar('test/1.test_acc', test_acc, epoch)
-            writer.add_scalar('test/2.test_loss', test_loss, epoch)
+        if (epoch + 1) % args.save_epoch == 0:
+            if IS_ON_NSML:
+                nsml.save(args.name + '_e{}'.format(epoch))
+            else:
+                torch.save(ema_model.state_dict(), os.path.join('runs', args.name + '_e{}'.format(epoch)))
 
-        is_best = test_acc > best_acc
-        best_acc = max(test_acc, best_acc)
+        global_step += 1
 
-        if fixmatch.args.local_rank in [-1, 0]:
-            model_to_save = model.module if hasattr(model, "module") else model
-            if fixmatch.args.use_ema:
-                ema_to_save = ema_model.ema.module if hasattr(
-                    ema_model.ema, "module") else ema_model.ema
-            save_checkpoint({
-                'epoch': epoch + 1,
-                'state_dict': model_to_save.state_dict(),
-                'ema_state_dict': ema_to_save.state_dict() if args.use_ema else None,
-                'acc': test_acc,
-                'best_acc': best_acc,
-                'optimizer': optimizer.state_dict(),
-                'scheduler': scheduler.state_dict(),
-            }, is_best, fixmatch.args.out)
-
-        test_accs.append(test_acc)
-        logger.info('Best top-1 acc: {:.2f}'.format(best_acc))
-        logger.info('Mean top-1 acc: {:.2f}\n'.format(
-            np.mean(test_accs[-20:])))
-
-    if fimxmatch.args.local_rank in [-1, 0]:
-        writer.close()
-    
-    fixmatch.validate(test_loader)
 
 def main():
     parser = argparse.ArgumentParser(description='PyTorch FixMatch Training')
     parser.add_argument('--gpu-id', default='0', type=int,
                         help='id(s) for CUDA_VISIBLE_DEVICES')
-    parser.add_argument('--num-workers', type=int, default=4,
+    parser.add_argument('--num-workers', type=int, default=2,
                         help='number of workers')
     parser.add_argument('--num-labeled', type=int, default=4000,
                         help='number of labeled data')
+    parser.add_argument('--num-classes', type=int, default=265,
+                        help='number of clasess')                        
     parser.add_argument('--name', default='resnet18', type=str,
                         choices=['resnet18', 'resnet50', 'dense121'],
                         help='model name')
-    parser.add_argument('--epochs', default=1024, type=int,
+    parser.add_argument('--epochs', default=200, type=int,
                         help='number of total epochs to run')
     parser.add_argument('--start-epoch', default=0, type=int,
                         help='manual epoch number (useful on restarts)')
+    parser.add_argument('--save_epoch', type=int, default=50, help='saving epoch interval')
+
     parser.add_argument('--batch-size', default=64, type=int,
                         help='train batchsize')
+    parser.add_argument('--log_interval', type=int, default=10, 
+                        metavar='N', help='logging training status')
+
+    parser.add_argument('--imResize', default=256, type=int, help='')
+    parser.add_argument('--imsize', default=224, type=int, help='')
+
     parser.add_argument('--lr', '--learning-rate', default=0.03, type=float,
                         help='initial learning rate')
     parser.add_argument('--warmup', default=0, type=float,
@@ -128,12 +117,23 @@ def main():
                         help="random seed (-1: don't use random seed)")
     parser.add_argument("--local_rank", type=int, default=-1,
                         help="For distributed training: local_rank")
-    parser.add_argument('--no-progress', action='store_true',
-                        help="don't use progress bar")
 
     args = parser.parse_args()
     global best_acc
+    global_step = 0
 
+    print(args)
+    
     fixmatch = FixMatch(args)
     fixmatch.model.zero_grad()
-    train(fixmatch)
+
+    if IS_ON_NSML:
+        bind_nsml(fixmatch.ema_model.ema)
+        # if opts.pause:
+        #     nsml.paused(scope=locals())
+
+    labeled_trainloader, unlabeled_w_trainloader, unlabeled_s_trainloader, validation_loader = get_dataset(args)
+    run_test(fixmatch, args, labeled_trainloader, unlabeled_w_trainloader, unlabeled_s_trainloader, validation_loader, global_step)
+
+if __name__ == "__main__":
+    main()

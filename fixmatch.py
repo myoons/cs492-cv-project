@@ -8,10 +8,7 @@ import torch.optim as optim
 
 from torchvision.transforms import transforms
 from torch.optim.lr_scheduler import LambdaLR
-from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
-from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
 
 import os
 import random
@@ -19,9 +16,11 @@ import math
 import time
 
 from ema import ModelEMA
-from augment import rand_augment, weak_augmentation
+# from augment import rand_augment, weak_augmentation
 from utils import *
 from models import Res18, Res50, Dense121, Res18_basic
+
+from nsml import IS_ON_NSML
 
 
 MEAN=[0.485, 0.456, 0.406]
@@ -68,7 +67,6 @@ class FixMatch(object):
         if args.seed != -1:
             set_seed(args)
 
-        args.local_rank = args.local_rank
         if args.local_rank == -1:
             device = torch.device('cuda', args.gpu_id)
             args.world_size = 1
@@ -81,27 +79,23 @@ class FixMatch(object):
             args.n_gpu = 1
 
         args.device = device
-
-        if args.local_rank in [-1, 0]:
-            os.makedirs(args.out, exist_ok=True)
-            writer = SummaryWriter(args.out)
+        self.model = self.model.to(device)
 
         if args.local_rank not in [-1, 0]:
             torch.distributed.barrier()
         
-        args.optimizer = optimizer = optim.SGD(model.parameters(), lr=args.lr,
+        self.optimizer = optim.SGD(self.model.parameters(), lr=args.lr,
                           momentum=0.9, nesterov=args.nesterov)
         
         args.iteration = args.k_img // args.batch_size // args.world_size
-        args.epochs = args.epochs
         args.total_steps = args.epochs * args.iteration
 
         args.warmup = args.warmup
         self.scheduler = get_cosine_schedule_with_warmup(
-            optimizer, args.warmup * args.iteration, args.total_steps)
+            self.optimizer, args.warmup * args.iteration, args.total_steps)
 
         if args.use_ema:
-            self.ema_model = ModelEMA(args, model, args.ema_decay, args.device)
+            self.ema_model = ModelEMA(args, self.model, args.ema_decay, args.device)
 
         if args.local_rank != -1:
             self.model = torch.nn.parallel.DistributedDataParallel(
@@ -110,7 +104,7 @@ class FixMatch(object):
                 output_device=args.local_rank, 
                 find_unused_parameters=True)
 
-    def train(self, args, labeled_trainloader, unlabeled_trainloader):
+    def train(self, args, labeled_trainloader, unlabeled_w_trainloader, unlabeled_s_trainloader, global_step):
         batch_time = AverageMeter()
         data_time = AverageMeter()
 
@@ -127,52 +121,50 @@ class FixMatch(object):
         acc_top5 = AverageMeter()
         end = time.time()
 
-        if not args.no_progress:
-            p_bar = tqdm(range(args.iteration),
-                        disable=args.local_rank not in [-1, 0])
+        train_loader = zip(labeled_trainloader, unlabeled_w_trainloader, unlabeled_s_trainloader)
+        self.model.train()
 
-        train_loader = zip(labeled_trainloader, unlabeled_trainloader)
-        model.train()
-
-        for batch_idx, (data_x, data_u) in enumerate(train_loader):
+        for batch_idx, (data_x, data_w_u, data_s_u) in enumerate(train_loader):
             input_x, target_x = data_x
-            (input_u_w, input_u_s), _ = data_u
+            input_u_w, input_u_s = data_w_u[0], data_s_u[0]
 
             data_time.update(time.time())
             batch_size = input_x.shape[0]
-            input = torch.cat((input_x, input_u_w, input_u_s)).to(args.device)
+            
+            input_x = input_x.to(args.device)
+            input_u_w, input_u_s = input_u_w.to(args.device), input_u_s.to(args.device)            
+
+            targets_org = target_x
             target_x = target_x.to(args.device)
 
-            logits = model(input)
-            logits_x = logits[:batch_size]
-            logits_u_w, logits_u_s = logits[batch_size:].chunk(2)
-            del logits
+            emb_x, logits_x = self.model(input_x)
+            emb_u_w, logits_u_w = self.model(input_u_w)
+            emb_u_s, logits_u_s = self.model(input_u_s)
 
             Lx = F.cross_entropy(logits_x, target_x, reduction='mean')
 
-            pseudo_label = torch.sorftmax(logits_u_w.detach(), dim=-1)
+            pseudo_label = torch.softmax(logits_u_w.detach(), dim=-1)
             max_probs, target_u = torch.max(pseudo_label, dim=-1)
             mask = max_probs.ge(args.threshold).float()
 
             Lu = (F.cross_entropy(logits_u_s, target_u, reduction='none') * mask).mean()
             
             loss = Lx + args.lambda_u * Lu
+            loss.backward()
 
-            if args.amp:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-            else:
-                loss.backward()
+            losses_curr.update(loss.item(), input_x.size(0))
+            losses_x_curr.update(Lx.item(), input_x.size(0))
+            losses_u_curr.update(Lu.item(), input_x.size(0))
 
-            losses.update(loss)
-            losses_x.update(Lx.item())
-            losses_u.update(Lu.item())
+            losses.update(loss.item(), input_x.size(0))
+            losses_x.update(Lx.item(), input_x.size(0))
+            losses_u.update(Lu.item(), input_x.size(0))
             
-            optimizer.step()
-            scheduler.step()
+            self.optimizer.step()
+            self.scheduler.step()
 
             if args.use_ema:
-                ema_model.update(model)
+                self.ema_model.update(self.model)
 
             self.model.zero_grad()
 
@@ -182,24 +174,24 @@ class FixMatch(object):
 
             with torch.no_grad():
                     # compute guessed labels of unlabel samples
-                embed_x, pred_x1 = model(input_x)
+                embed_x, pred_x1 = self.model(input_x)
 
-                if IS_ON_NSML and global_step % opts.log_interval == 0:
-                    nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_un_curr.avg)
+                if IS_ON_NSML and global_step % args.log_interval == 0:
+                    nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_u_curr.avg)
                     losses_curr.reset()
                     losses_x_curr.reset()
-                    losses_un_curr.reset()
+                    losses_u_curr.reset()
 
                 acc_top1b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=1)*100
                 acc_top5b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=5)*100    
-                acc_top1.update(torch.as_tensor(acc_top1b), inputs_x.size(0))        
-                acc_top5.update(torch.as_tensor(acc_top5b), inputs_x.size(0))
+                acc_top1.update(torch.as_tensor(acc_top1b), input_x.size(0))        
+                acc_top5.update(torch.as_tensor(acc_top5b), input_x.size(0))
 
 
-        return losses.avg, losses_x.avg, losses_un.avg, acc_top1.avg, acc_top5.avg
+        return losses.avg, losses_x.avg, losses_u.avg, acc_top1.avg, acc_top5.avg
 
 
-    def validate(self, args, test_loader, model):
+    def validate(self, args, test_loader, epoch):
         batch_time = AverageMeter()
         data_time = AverageMeter()
         losses = AverageMeter()
@@ -207,39 +199,26 @@ class FixMatch(object):
         top5 = AverageMeter()
         end = time.time()
 
-        if not args.no_progress:
-            test_loader = tqdm(test_loader,
-                            disable=args.local_rank not in [-1, 0])
-
         with torch.no_grad():
             for batch_idx, (inputs, targets) in enumerate(test_loader):
                 data_time.update(time.time() - end)
-                model.eval()
+                self.model.eval()
 
                 inputs = inputs.to(args.device)
                 targets = targets.to(args.device)
-                outputs = model(inputs)
+                emb_o, outputs = self.model(inputs)
                 loss = F.cross_entropy(outputs, targets)
+                
+                prec1 = top_n_accuracy_score(targets.data.cpu().numpy(), outputs.data.cpu().numpy(), n=1)*100
+                prec5 = top_n_accuracy_score(targets.data.cpu().numpy(), outputs.data.cpu().numpy(), n=5)*100    
 
-                prec1, prec5 = accuracy(outputs, targets, topk=(1, 5))
                 losses.update(loss.item(), inputs.shape[0])
-                top1.update(prec1.item(), inputs.shape[0])
-                top5.update(prec5.item(), inputs.shape[0])
+                top1.update(prec1, inputs.shape[0])
+                top5.update(prec5, inputs.shape[0])
                 batch_time.update(time.time() - end)
                 end = time.time()
-                if not args.no_progress:
-                    test_loader.set_description("Test Iter: {batch:4}/{iter:4}. Data: {data:.3f}s. Batch: {bt:.3f}s. Loss: {loss:.4f}. top1: {top1:.2f}. top5: {top5:.2f}. ".format(
-                        batch=batch_idx + 1,
-                        iter=len(test_loader),
-                        data=data_time.avg,
-                        bt=batch_time.avg,
-                        loss=losses.avg,
-                        top1=top1.avg,
-                        top5=top5.avg,
-                    ))
-            if not args.no_progress:
-                test_loader.close()
 
-        logger.info("top-1 acc: {:.2f}".format(top1.avg))
-        logger.info("top-5 acc: {:.2f}".format(top5.avg))
-        return losses.avg, top1.avg
+        print("top-1 acc: {:.2f}".format(top1.avg))
+        print("top-5 acc: {:.2f}".format(top5.avg))
+
+        return top1.avg, top5.avg

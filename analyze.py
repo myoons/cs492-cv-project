@@ -9,7 +9,7 @@ from models.models import MyCNN
 from utils.randaugment import RandAugment
 
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
-PATH = './kaist0011_fashion_dataset_526\Myoons_best\model\model.pt'
+PATH = './kaist0011_fashion_dataset_565\Myoons_best\model\model.pt'
 device = torch.device('cpu')
 NUM_CLASSES = 265
 

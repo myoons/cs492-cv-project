@@ -226,19 +226,13 @@ class MyCNN(nn.Module):
 
         self.maxPool = nn.MaxPool2d(kernel_size=(2,2), stride=(2,2))
         self.relu = nn.ReLU()
-        """
+        
         self.fc1 = nn.Linear(4000, 2000)
         self.batchFc1 = nn.BatchNorm1d(2000)
         self.fc2 = nn.Linear(2000, 530)
         self.batchFc2 = nn.BatchNorm1d(530)
         self.fc3 = nn.Linear(530,class_num)
-        """
 
-        self.fc1 = nn.Linear(11520, 4000)
-        self.batchFc1 = nn.BatchNorm1d(4000)
-        self.fc2 = nn.Linear(4000, 530)
-        self.batchFc2 = nn.BatchNorm1d(530)
-        self.fc3 = nn.Linear(530,class_num)
 
         nn.init.kaiming_normal_(self.conv1.weight)
         nn.init.kaiming_normal_(self.conv2.weight)
@@ -258,7 +252,7 @@ class MyCNN(nn.Module):
         x = self.maxPool(self.relu(self.batchConv2(self.conv2(x)))) # torch.Size([53, 20, 54, 54])
         x = self.maxPool(self.relu(self.batchConv3(self.conv3(x)))) # torch.Size([53, 40, 26, 26])
         x = self.maxPool(self.relu(self.batchConv4(self.conv4(x)))) # torch.Size([53, 80, 12, 12])
-        # x = self.maxPool(self.relu(self.batchConv5(self.conv5(x)))) # torch.Size([53, 160, 5, 5])
+        x = self.maxPool(self.relu(self.batchConv5(self.conv5(x)))) # torch.Size([53, 160, 5, 5])
         
         x = x.view(batchSize,-1) # torch.Size([53, 4000])
         

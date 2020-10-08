@@ -1,12 +1,17 @@
+import torch
+import shutil
+
 class AverageMeter(object):
     """Computes and stores the average and current value"""
     def __init__(self):
         self.reset()
+
     def reset(self):
         self.val = 0
         self.avg = 0
         self.sum = 0
         self.count = 0
+
     def update(self, val, n=1):
         self.val = val
         self.sum += val * n
@@ -140,3 +145,18 @@ def bind_nsml(model):
         return _infer(model, root_path)
 
     nsml.bind(save=save, load=load, infer=infer)
+
+def save_checkpoint(state, is_best, checkpoint, filename='checkpoint.pth.tar'):
+    filepath = os.path.join(checkpoint, filename)
+    torch.save(state, filepath)
+    if is_best:
+        shutil.copyfile(filepath, os.path.join(checkpoint,
+                                               'model_best.pth.tar'))
+
+def set_seed(args):
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+    if args.n_gpu > 0:
+        torch.cuda.manual_seed_all(args.seed)

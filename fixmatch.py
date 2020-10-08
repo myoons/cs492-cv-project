@@ -1,84 +1,245 @@
 import numpy as np
+
 import torch
-from torchvision import utils
 import torch.nn as nn
+import torch.backends.cudnn as cudnn
+import torch.nn.functional as F
+import torch.optim as optim
 
 from torchvision.transforms import transforms
-from augment import rand_augment, weak_augmentation
-from utils import *
+from torch.optim.lr_scheduler import LambdaLR
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
+from torch.utils.data.distributed import DistributedSampler
+from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 
+import os
 import random
 import math
+import time
+
+from ema import ModelEMA
+from augment import rand_augment, weak_augmentation
+from utils import *
+from models import Res18, Res50, Dense121, Res18_basic
 
 
 MEAN=[0.485, 0.456, 0.406]
 STD=[0.229, 0.224, 0.225]
 
-def weak_aug(resize, imsize):
-    weak_transform = transforms.Compose([
-        transforms.Resize(resize),
-        transforms.RandomResizedCrop(imsize),
-        weak_augmentation.flip_augmentation(),
-        transforms.ToTensor(),
-        transforms.Normalize(MEAN, STD),
-    ])
 
-    return weak_transform
-
-
-def strong_aug(resize, imsize):
-    transform_train = transforms.Compose([
-        transforms.Resize(opts.imResize),
-        transforms.RandomResizedCrop(opts.imsize),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize(MEAN, STD),
-    ])
-
-    # Add RandAugment with N, M(hyperparameter)
-    return transform_train.transforms.insert(0, rand_augment(N, M))
-
-
-def learning_decay(n, k, K):
-    return n * math.cos((7 * math.PI) / (16 * K))
-
-
-def train():
-    losses = AverageMeter()
-    losses_x = AverageMeter()
-    losses_un = AverageMeter()
-    
-    losses_curr = AverageMeter()
-    losses_x_curr = AverageMeter()
-    losses_un_curr = AverageMeter()
-
-    weight_scale = AverageMeter()
-    acc_top1 = AverageMeter()
-    acc_top5 = AverageMeter()
-
-def loss(self, output_x, target_x, output_u, target_u, epoch):    
-    def idx_f(qb, threshold):
-        if max(qb) > threshold:
-            return 1
-        else:
-            return 0
-    Ls = -torch.mean(torch.sum(F.log_softmax(output_x, dim) * target_x, dim=1))
-
-    H = - (1-target_u) * np.log(1 - target_u)) - target_u * np.log(prob(strong_aug(ub)))
-    Lu = np.avg(idx_f(target_u, self.threshold) * H)
-
-    return Ls, labmda_u * Lu
-
-__call__(self, outputs_x, targets_x, outputs_u, targets_u, epoch, final_epoch):
-        probs_u = torch.softmax(outputs_u, dim=1)
-        Lx = -torch.mean(torch.sum(F.log_softmax(outputs_x, dim=1) * targets_x, dim=1))
-        Lu = torch.mean((probs_u - targets_u)**2)
-        return Lx, Lu, opts.lambda_u * linear_rampup(epoch, final_epoch)
-
-
-class FixMatch(nn.Module):
-    def __init__(self, imagenet):
-        super.__init__()
-        self.imagenet = imagenet
+def set_seed(args):
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+    if args.n_gpu > 0:
+        torch.cuda.manual_seed_all(args.seed)
         
 
+def get_cosine_schedule_with_warmup(optimizer,
+                                    num_warmup_steps,
+                                    num_training_steps,
+                                    num_cycles=7./16.,
+                                    last_epoch=-1):
+    def _lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        no_progress = float(current_step - num_warmup_steps) / \
+            float(max(1, num_training_steps - num_warmup_steps))
+        return max(0., math.cos(math.pi * num_cycles * no_progress))
+
+    return LambdaLR(optimizer, _lr_lambda, last_epoch)
+
+
+class FixMatch(object):
+    def __init__(self, args):
+        self.args = args
+
+        if args.name == 'resnet18':
+            self.model = Res18(args.num_classes)
+        elif args.name == 'resnet50':
+            self.model = Res50(args.num_classes)
+        elif args.name == 'dense121':
+            self.model = DenseNet(args.num_classes)
+        else:
+            self.model = Res18_basic(args.num_classes)
+        
+        if args.seed != -1:
+            set_seed(args)
+
+        args.local_rank = args.local_rank
+        if args.local_rank == -1:
+            device = torch.device('cuda', args.gpu_id)
+            args.world_size = 1
+            args.n_gpu = torch.cuda.device_count()
+        else:
+            torch.cuda.set_device(args.local_rank)
+            device = torch.device('cuda', args.local_rank)
+            torch.distributed.init_process_group(backend='nccl')
+            args.world_size = torch.distributed.get_world_size()
+            args.n_gpu = 1
+
+        args.device = device
+
+        if args.local_rank in [-1, 0]:
+            os.makedirs(args.out, exist_ok=True)
+            writer = SummaryWriter(args.out)
+
+        if args.local_rank not in [-1, 0]:
+            torch.distributed.barrier()
+        
+        args.optimizer = optimizer = optim.SGD(model.parameters(), lr=args.lr,
+                          momentum=0.9, nesterov=args.nesterov)
+        
+        args.iteration = args.k_img // args.batch_size // args.world_size
+        args.epochs = args.epochs
+        args.total_steps = args.epochs * args.iteration
+
+        args.warmup = args.warmup
+        self.scheduler = get_cosine_schedule_with_warmup(
+            optimizer, args.warmup * args.iteration, args.total_steps)
+
+        if args.use_ema:
+            self.ema_model = ModelEMA(args, model, args.ema_decay, args.device)
+
+        if args.local_rank != -1:
+            self.model = torch.nn.parallel.DistributedDataParallel(
+                self.model, 
+                device_ids=[args.local_rank],
+                output_device=args.local_rank, 
+                find_unused_parameters=True)
+
+    def train(self, args, labeled_trainloader, unlabeled_trainloader):
+        batch_time = AverageMeter()
+        data_time = AverageMeter()
+
+        losses = AverageMeter()
+        losses_x = AverageMeter()
+        losses_u = AverageMeter()
+        
+        losses_curr = AverageMeter()
+        losses_x_curr = AverageMeter()
+        losses_u_curr = AverageMeter()
+
+        weight_scale = AverageMeter()
+        acc_top1 = AverageMeter()
+        acc_top5 = AverageMeter()
+        end = time.time()
+
+        if not args.no_progress:
+            p_bar = tqdm(range(args.iteration),
+                        disable=args.local_rank not in [-1, 0])
+
+        train_loader = zip(labeled_trainloader, unlabeled_trainloader)
+        model.train()
+
+        for batch_idx, (data_x, data_u) in enumerate(train_loader):
+            input_x, target_x = data_x
+            (input_u_w, input_u_s), _ = data_u
+
+            data_time.update(time.time())
+            batch_size = input_x.shape[0]
+            input = torch.cat((input_x, input_u_w, input_u_s)).to(args.device)
+            target_x = target_x.to(args.device)
+
+            logits = model(input)
+            logits_x = logits[:batch_size]
+            logits_u_w, logits_u_s = logits[batch_size:].chunk(2)
+            del logits
+
+            Lx = F.cross_entropy(logits_x, target_x, reduction='mean')
+
+            pseudo_label = torch.sorftmax(logits_u_w.detach(), dim=-1)
+            max_probs, target_u = torch.max(pseudo_label, dim=-1)
+            mask = max_probs.ge(args.threshold).float()
+
+            Lu = (F.cross_entropy(logits_u_s, target_u, reduction='none') * mask).mean()
+            
+            loss = Lx + args.lambda_u * Lu
+
+            if args.amp:
+                with amp.scale_loss(loss, optimizer) as scaled_loss:
+                    scaled_loss.backward()
+            else:
+                loss.backward()
+
+            losses.update(loss)
+            losses_x.update(Lx.item())
+            losses_u.update(Lu.item())
+            
+            optimizer.step()
+            scheduler.step()
+
+            if args.use_ema:
+                ema_model.update(model)
+
+            self.model.zero_grad()
+
+            batch_time.update(time.time() - end)
+            end = time.time()
+            mask_prob = mask.mean().item()
+
+            with torch.no_grad():
+                    # compute guessed labels of unlabel samples
+                embed_x, pred_x1 = model(input_x)
+
+                if IS_ON_NSML and global_step % opts.log_interval == 0:
+                    nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_un_curr.avg)
+                    losses_curr.reset()
+                    losses_x_curr.reset()
+                    losses_un_curr.reset()
+
+                acc_top1b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=1)*100
+                acc_top5b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=5)*100    
+                acc_top1.update(torch.as_tensor(acc_top1b), inputs_x.size(0))        
+                acc_top5.update(torch.as_tensor(acc_top5b), inputs_x.size(0))
+
+
+        return losses.avg, losses_x.avg, losses_un.avg, acc_top1.avg, acc_top5.avg
+
+
+    def validate(self, args, test_loader, model):
+        batch_time = AverageMeter()
+        data_time = AverageMeter()
+        losses = AverageMeter()
+        top1 = AverageMeter()
+        top5 = AverageMeter()
+        end = time.time()
+
+        if not args.no_progress:
+            test_loader = tqdm(test_loader,
+                            disable=args.local_rank not in [-1, 0])
+
+        with torch.no_grad():
+            for batch_idx, (inputs, targets) in enumerate(test_loader):
+                data_time.update(time.time() - end)
+                model.eval()
+
+                inputs = inputs.to(args.device)
+                targets = targets.to(args.device)
+                outputs = model(inputs)
+                loss = F.cross_entropy(outputs, targets)
+
+                prec1, prec5 = accuracy(outputs, targets, topk=(1, 5))
+                losses.update(loss.item(), inputs.shape[0])
+                top1.update(prec1.item(), inputs.shape[0])
+                top5.update(prec5.item(), inputs.shape[0])
+                batch_time.update(time.time() - end)
+                end = time.time()
+                if not args.no_progress:
+                    test_loader.set_description("Test Iter: {batch:4}/{iter:4}. Data: {data:.3f}s. Batch: {bt:.3f}s. Loss: {loss:.4f}. top1: {top1:.2f}. top5: {top5:.2f}. ".format(
+                        batch=batch_idx + 1,
+                        iter=len(test_loader),
+                        data=data_time.avg,
+                        bt=batch_time.avg,
+                        loss=losses.avg,
+                        top1=top1.avg,
+                        top5=top5.avg,
+                    ))
+            if not args.no_progress:
+                test_loader.close()
+
+        logger.info("top-1 acc: {:.2f}".format(top1.avg))
+        logger.info("top-5 acc: {:.2f}".format(top5.avg))
+        return losses.avg, top1.avg

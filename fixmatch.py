@@ -5,10 +5,9 @@ import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.optim.lr_scheduler import LambdaLR
 
 from torchvision.transforms import transforms
-from torch.optim.lr_scheduler import LambdaLR
-from torch.utils.data.distributed import DistributedSampler
 
 import os
 import random
@@ -16,25 +15,11 @@ import math
 import time
 
 from ema import ModelEMA
-# from augment import rand_augment, weak_augmentation
 from utils import *
 from models import Res18, Res50, Dense121, Res18_basic
 
 from nsml import IS_ON_NSML
 
-
-MEAN=[0.485, 0.456, 0.406]
-STD=[0.229, 0.224, 0.225]
-
-
-def set_seed(args):
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
-    if args.n_gpu > 0:
-        torch.cuda.manual_seed_all(args.seed)
-        
 
 def get_cosine_schedule_with_warmup(optimizer,
                                     num_warmup_steps,
@@ -51,6 +36,14 @@ def get_cosine_schedule_with_warmup(optimizer,
     return LambdaLR(optimizer, _lr_lambda, last_epoch)
 
 
+def linear_rampup(current, rampup_length):
+    if rampup_length == 0:
+        return 1.0
+    else:
+        current = np.clip(current / rampup_length, 0.0, 1.0)
+        return float(current)
+
+
 class FixMatch(object):
     def __init__(self, args):
         self.args = args
@@ -63,9 +56,21 @@ class FixMatch(object):
             self.model = DenseNet(args.num_classes)
         else:
             self.model = Res18_basic(args.num_classes)
-        
-        if args.seed != -1:
-            set_seed(args)
+
+        print(args)
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        args.device = device        
+        print('Using device:', device)
+        print()
+
+        #Additional Info when using cuda
+        if device.type == 'cuda':
+            print(torch.cuda.get_device_name(0))
+            print('Memory Usage:')
+            print('Allocated:', round(torch.cuda.memory_allocated(0)/1024**3,1), 'GB')
+            print('Cached:   ', round(torch.cuda.memory_cached(0)/1024**3,1), 'GB')
+
+            self.model = self.model.to(args.device)
 
         if args.local_rank == -1:
             device = torch.device('cuda', args.gpu_id)
@@ -77,19 +82,21 @@ class FixMatch(object):
             torch.distributed.init_process_group(backend='nccl')
             args.world_size = torch.distributed.get_world_size()
             args.n_gpu = 1
-
-        args.device = device
-        self.model = self.model.to(device)
-
+     
         if args.local_rank not in [-1, 0]:
             torch.distributed.barrier()
-        
-        self.optimizer = optim.SGD(self.model.parameters(), lr=args.lr,
-                          momentum=0.9, nesterov=args.nesterov)
-        
-        args.iteration = args.k_img // args.batch_size // args.world_size
-        args.total_steps = args.epochs * args.iteration
 
+        if args.seed != -1:
+            set_seed(args)
+        
+        if args.optim == "adam":
+            self.optimizer = optim.Adam(self.model.parameters(), lr=args.lr,
+                                        weight_decay=args.wdecay)
+        else:    
+            self.optimizer = optim.SGD(self.model.parameters(), lr=args.lr,
+                                        momentum=0.9, nesterov=args.nesterov)
+        args.iteration = args.num_labeled // args.batch_size // args.world_size
+        args.total_steps = args.epochs * args.iteration
         args.warmup = args.warmup
         self.scheduler = get_cosine_schedule_with_warmup(
             self.optimizer, args.warmup * args.iteration, args.total_steps)
@@ -130,12 +137,13 @@ class FixMatch(object):
 
             data_time.update(time.time())
             batch_size = input_x.shape[0]
-            
-            input_x = input_x.to(args.device)
-            input_u_w, input_u_s = input_u_w.to(args.device), input_u_s.to(args.device)            
+
+            if args.device.type == 'cuda':
+                input_x = input_x.to(args.device)
+                input_u_w, input_u_s = input_u_w.to(args.device), input_u_s.to(args.device)            
+                target_x = target_x.to(args.device)
 
             targets_org = target_x
-            target_x = target_x.to(args.device)
 
             emb_x, logits_x = self.model(input_x)
             emb_u_w, logits_u_w = self.model(input_u_w)
@@ -148,8 +156,11 @@ class FixMatch(object):
             mask = max_probs.ge(args.threshold).float()
 
             Lu = (F.cross_entropy(logits_u_s, target_u, reduction='none') * mask).mean()
-            
-            loss = Lx + args.lambda_u * Lu
+
+            if global_step < 20:
+                loss = Lx
+            else:            
+                loss = Lx + args.lambda_u * Lu
             loss.backward()
 
             losses_curr.update(loss.item(), input_x.size(0))

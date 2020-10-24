@@ -12,12 +12,10 @@ nsml login
 ```
 
 ### Load Pretrained Model
-We saved a pretrained model in 
+We saved a pretrained model in path `/pretrained/model.pt`. You can load this pretrained weights through `load_pretrained.py`.
 
-
-### Example
-For example, training a FixMatch with 32 filters on cifar10 shuffled with `seed=3`, 40 labeled samples and 1
-validation sample:
+### Train the model
+To train the model, use 
 ```bash
 python fixmatch.py --filters=32 --train_dir ./experiments/fixmatch
 ```

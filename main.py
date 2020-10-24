@@ -30,7 +30,6 @@ from fixmatch import FixMatch
 import nsml
 from nsml import DATASET_PATH, IS_ON_NSML
 
-
 NUM_CLASSES = 265
 best_acc = 0
 

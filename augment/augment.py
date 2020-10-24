@@ -1,5 +1,5 @@
 from torchvision import transforms, utils
-
+import random
 
 def weak_aug(xb):
     flip = transforms.RandomHorizontalFlip(p=0.5)

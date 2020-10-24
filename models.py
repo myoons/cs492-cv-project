@@ -108,7 +108,7 @@ class Res18_basic(nn.Module):
     def __init__(self, class_num):
         super(Res18_basic, self).__init__()
         fea_dim = 256
-        model_ft = models.resnet18(pretrained=True)
+        model_ft = models.resnet18(pretrained=False)
         model_ft.avgpool = nn.AdaptiveAvgPool2d((1,1))
         model_ft.fc = nn.Sequential()
         self.model = model_ft
@@ -137,7 +137,7 @@ class Res18(nn.Module):
     def __init__(self, class_num):
         super(Res18, self).__init__()
         fea_dim = 256
-        model_ft = models.resnet18(pretrained=True)
+        model_ft = models.resnet18(pretrained=False)
         model_ft.avgpool = nn.AdaptiveAvgPool2d((1,1))
         model_ft.fc = nn.Sequential()
         self.model = model_ft
@@ -166,7 +166,7 @@ class Res50(nn.Module):
     def __init__(self, class_num):
         super(Res50, self).__init__()
         fea_dim = 256        
-        model_ft = models.resnet50(pretrained=True)
+        model_ft = models.resnet50(pretrained=False)
         model_ft.avgpool = nn.AdaptiveAvgPool2d((1,1))
         model_ft.fc = nn.Sequential()        
         self.model = model_ft
@@ -194,7 +194,7 @@ class Dense121(nn.Module):
     def __init__(self, class_num):
         super(Dense121, self).__init__()
         fea_dim = 256        
-        model_ft = models.densenet121(pretrained=True)
+        model_ft = models.densenet121(pretrained=False)
         model_ft.features.classifier = nn.Sequential()
         model_ft.features.avgpool = nn.AdaptiveAvgPool2d((1,1))
         model_ft.features.fc_embed = nn.Linear(1024, fea_dim)

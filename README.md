@@ -6,19 +6,25 @@ You can install this repository using ```git clone```
 ```bash
 git clone https://github.com/yejihan-dev/cs492-cv-project.git
 ```
+
 You should log in to NSML to run the model.
 ```bash
 nsml login
 ```
 
-### Load Pretrained Model
-We saved a pretrained model in path `/pretrained/model.pt`. You can load this pretrained weights through `load_pretrained.py`.
-
 ### Train the model
-To train the model, use 
+To train the model in NSML, use 
 ```bash
-python fixmatch.py --filters=32 --train_dir ./experiments/fixmatch
+nsml run -d fashion_dataset -g 1 --args "--name resnet18 --optim sgd --batch-size 64 --epoch 200 --mu 7 --lambda-u 1 --threshold 0.95"
 ```
+
+### Load Pretrained Model
+We saved a pretrained model in path `/pretrained/model.pt`. You can load this pretrained weights by editing above command into
+
+```bash
+nsml run -d fashion_dataset -g 1 --args "--name resnet18 --optim sgd --batch-size 64 --epoch 200 --mu 7 --lambda-u 1 --threshold 0.95"
+```
+
 
 #### Multi-GPU training
 Just pass more GPUs and fixmatch automatically scales to them, here we assign GPUs 4-7 to the program:

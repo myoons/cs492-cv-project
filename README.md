@@ -1,7 +1,10 @@
-# Applying FixMatch to NAVER Shopping Dataset
-Yoonseo Kim, Yeji Han
+# CS492 CV Project
+## Applying FixMatch to NAVER Shopping Dataset
+Project Contributor: [Yoonseo Kim](https://github.com/myoons), [Yeji Han](https://github.com/yejihan-dev)
 
-### Setup
+
+## Setup
+---
 You can install this repository using ```git clone``` 
 ```bash
 git clone https://github.com/yejihan-dev/cs492-cv-project.git
@@ -12,50 +15,71 @@ You should log in to NSML to run the model.
 nsml login
 ```
 
-### Train the model
-To train the model in NSML, use 
+## Code Architecture
+---
+`main.py` is what NSML runs to import the model or to train it. `main.py` serves as a frame for iterating epochs. In order to see the specific implementation of FixMatch alogrithm, refer to `fixmatch.py`. If you want to see how RandAugment is implemented, refer to `rand_augment.py`. To find out auxiliary functions for dataset and NSML, refer to `dataset.py` and `utils.py`.
+
+
+## Train the model
+---
+To train the model on NSML, use the
 ```bash
 nsml run -d fashion_dataset -g 1 --args "--name resnet18 --optim sgd --batch-size 64 --epoch 200 --mu 7 --lambda-u 1 --threshold 0.95"
 ```
 
-### Load Pretrained Model
-We saved a pretrained model in path `/pretrained/model.pt`. You can load this pretrained weights by editing above command into
+### List of Major Flags
+There are several option flags you can apply to change hyperparameters of the model.
+- `--name`: image classifying architecture
+    - `default='resnet34'`
+    - `type=str`
+    - `choices=['resnet18', 'resnet34', 'resnet50']`
+- `--optim`
+    - `default='sgd'`
+    - `type=str`
+    - `choices=['adam', 'sgd', 'adamw', 'yogi']`
+- `--batch-size`, 
+    - `default=64`, 
+    - `type=int`
+- `--epochs`
+    - `default=200`
+    - `type=int`
+- `--lr`
+    - `default=0.03`
+    - `type=float`
+- `--mu`: coefficient of unlabeled batch size
+    - `default=7`
+    - `type=int`
+- `--lambda-u`: coefficient of unlabeled loss
+    - `default=1`
+    - `type=float`
+- `--threshold`: pseudo-label threshold
+    - `default=0.95`
+    - `type=float`
+- `--mode`: nsml mode
+    - `--mode`
+    - `type=str`
+    - `default='train'`
+
+## Load Pretrained Model
+---
+We saved the best pretrained model in path `/pretrained/model.pt`. You can load this pretrained weights using `pretrained` flag.
 
 ```bash
-nsml run -d fashion_dataset -g 1 --args "--name resnet18 --optim sgd --batch-size 64 --epoch 200 --mu 7 --lambda-u 1 --threshold 0.95"
+nsml run -d fashion_dataset -g 1 --args "--pretrained True"
 ```
 
-
-#### Multi-GPU training
-Just pass more GPUs and fixmatch automatically scales to them, here we assign GPUs 4-7 to the program:
-```bash
-CUDA_VISIBLE_DEVICES=4,5,6,7 python fixmatch.py --filters=32 --dataset=cifar10.3@40-1 --train_dir ./experiments/fixmatch
-```
-
-#### Flags
+## Ablation Study
+---
+If GPUs are sufficient on NSML, you can try automated ablation study by running `ablation_sh`. Since it automatically runs several session, GPUs may be congested.
 
 ```bash
-python fixmatch.py --help
-# The following option might be too slow to be really practical.
-# python fixmatch.py --helpfull
-# So instead I use this hack to find the flags:
-fgrep -R flags.DEFINE libml fixmatch.py
+./ablation_study.sh
 ```
-
-The `--augment` flag can use a little more explanation. It is composed of 3 values, for example `d.d.d`
-(`d`=default augmentation, for example shift/mirror, `x`=identity, e.g. no augmentation, `ra`=rand-augment,
- `rac`=rand-augment + cutout):
-- the first `d` refers to data augmentation to apply to the labeled example. 
-- the second `d` refers to data augmentation to apply to the weakly augmented unlabeled example. 
-- the third `d` refers to data augmentation to apply to the strongly augmented unlabeled example. For the strong
-augmentation, `d` is followed by `CTAugment` for `fixmatch.py` and code inside `cta/` folder.
-
-
-## Checkpoint accuracy
-
-
 
 ## Reference
+---
 [1] "[FixMatch: Simplifying Semi-Supervised Learning with Consistency and Confidence](https://arxiv.org/abs/2001.07685)" by Kihyuk Sohn, David Berthelot, Chun-Liang Li, Zizhao Zhang, Nicholas Carlini, Ekin D. Cubuk, Alex Kurakin, Han Zhang, and Colin Raffel.
 
 [2] "[MixMatch - A Holistic Approach to Semi-Supervised Learning](https://arxiv.org/abs/1905.02249)" by David Berthelot, Nicholas Carlini, Ian Goodfellow, Nicolas Papernot, Avital Oliver and Colin Raffel.
+
+[3] "[Randaugment: Practical automated data augmentation with a reduced search space.](https://openaccess.thecvf.com/content_CVPRW_2020/papers/w40/Cubuk_Randaugment_Practical_Automated_Data_Augmentation_With_a_Reduced_Search_Space_CVPRW_2020_paper.pdf)" by Cubuk, E. D., Zoph, B., Shlens, J., & Le, Q. V.

@@ -52,7 +52,7 @@ def run_session(fixmatch, args, labeled_trainloader, unlabeled_trainloader, vali
         if is_best:
             print('model achieved the best accuracy ({:.3f}%) - saving best checkpoint...'.format(best_acc))
             if IS_ON_NSML:
-                nsml.save('fixmatch' + '_best')
+                nsml.save(args.name + '_best')
                 torch.save(fixmatch.model.state_dict(), os.path.join('runs', args.name + '_best'))
 
 
@@ -92,8 +92,8 @@ def main():
                         help='number of total epochs to run')
     parser.add_argument('--start-epoch', default=0, type=int,
                         help='manual epoch number (useful on restarts)')
-    parser.add_argument('--log_interval', type=int, default=10, metavar='N', help='logging training status')
-    parser.add_argument('--save_epoch', type=int, default=50, help='saving epoch interval')
+    parser.add_argument('--log-interval', type=int, default=10, metavar='N', help='logging training status')
+    parser.add_argument('--save-epoch', type=int, default=50, help='saving epoch interval')
 
     parser.add_argument('--imResize', default=256, type=int, help='')
     parser.add_argument('--imsize', default=224, type=int, help='')
@@ -133,8 +133,12 @@ def main():
 
     if IS_ON_NSML:
         bind_nsml(model_to_test)
+        if args.pretrained:
+            nsml.load(checkpoint='resnet34_e199', session='kaist0011/fashion_dataset/1113')
+            nsml.save('saved')
+            
         if args.pause:
-            nsml.paused(scope=locals())         
+            nsml.paused(scope=locals())
 
     if args.mode == 'train':
         labeled_trainloader, unlabeled_trainloader, validation_loader = get_dataset(args)

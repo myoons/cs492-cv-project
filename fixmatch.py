@@ -54,9 +54,6 @@ class FixMatch(object):
         args.device = device        
         print('Using device:', device)
 
-        if args.pretrained:
-            self.model = load_best_model("./pretrained/model.pt", args.num_classes, args)
-
         if args.name == 'resnet18':
             self.model = Res18(args.num_classes)
         elif args.name == 'resnet34':
@@ -217,7 +214,7 @@ class FixMatch(object):
                 acc_top1.update(torch.as_tensor(acc_top1b), inputs_x.size(0))        
                 acc_top5.update(torch.as_tensor(acc_top5b), inputs_x.size(0))
                 
-                print('acc_top1: {:.3f}%, acc_top5: {:.3f}%'.format(acc_top1b, acc_top5b))
+                # print('acc_top1: {:.3f}%, acc_top5: {:.3f}%'.format(acc_top1b, acc_top5b))
 
             batch_idx += 1
         return losses.avg, losses_x.avg, losses_u.avg, acc_top1.avg, acc_top5.avg

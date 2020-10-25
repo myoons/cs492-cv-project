@@ -62,10 +62,10 @@ There are several option flags you can apply to change hyperparameters of the mo
     - default='train'
 
 ## Load Pretrained Model
-We saved the best pretrained model in path `/pretrained/model.pt`. You can load this pretrained weights using `pretrained` flag.
+You can load this pretrained weights using `pretrained` flag in NSML. We also saved the best pretrained model in path `/pretrained/model.pt`.
 
 ```bash
-nsml run -d fashion_dataset -g 1 --args "--pretrained True"
+nsml run -d fashion_dataset -g 1 --args "--name res34 --pretrained True"
 ```
 
 ## Ablation Study

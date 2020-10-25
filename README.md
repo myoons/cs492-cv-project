@@ -25,7 +25,7 @@ nsml login
 ## Train the Model
 To train the model on NSML, use the
 ```bash
-nsml run -d fashion_dataset -g 1 --args "--name resnet18 --optim sgd --batch-size 64 --epoch 200 --mu 7 --lambda-u 1 --threshold 0.95"
+nsml run -d fashion_dataset -g 1 --args "--name resnet34 --optim sgd --batch-size 200 --epoch 200 --mu 7 --lambda-u 1 --threshold 0.95"
 ```
 
 ### List of Major Flags

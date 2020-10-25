@@ -108,3 +108,4 @@ venv.bak/
 
 # dataset
 /fashion_data2
+.DS_Store

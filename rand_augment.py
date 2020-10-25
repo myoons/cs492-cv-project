@@ -157,7 +157,6 @@ def Identity(img, v):
 
 
 def augment_list():  # 16 oeprations and their ranges
-    # https://github.com/google-research/uda/blob/master/image/randaugment/policies.py#L57
     # l = [
     #     (Identity, 0., 1.0),
     #     (ShearX, 0., 0.3),  # 0
@@ -183,9 +182,9 @@ def augment_list():  # 16 oeprations and their ranges
         (Equalize, 0, 1),
         (Invert, 0, 1),
         (Rotate, 0, 30),
-        (Posterize, 0, 4),
-        (Solarize, 0, 256),
-        (SolarizeAdd, 0, 110),
+        # (Posterize, 0, 4),
+        # (Solarize, 0, 256),
+        # (SolarizeAdd, 0, 110),
         (Color, 0.1, 1.9),
         (Contrast, 0.1, 1.9),
         (Brightness, 0.1, 1.9),
@@ -257,5 +256,6 @@ class RandAugment:
         for op, minval, maxval in ops:
             val = (float(self.m) / 30) * float(maxval - minval) + minval
             img = op(img, val)
-
+        with open("augmentation_list.txt", 'a+') as f:
+            f.write(str(ops) + "\n")
         return img

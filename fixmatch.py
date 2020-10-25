@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 import torch.optim as optim
+import torch_optimizer as optimize
 from torch.optim.lr_scheduler import LambdaLR
 
 from torchvision.transforms import transforms
@@ -13,10 +14,10 @@ import os
 import random
 import math
 import time
+from copy import deepcopy
 
-from ema import ModelEMA
 from utils import *
-from models import Res18, Res50, Dense121, Res18_basic
+from models import Res18, Res50, Res34
 
 from nsml import IS_ON_NSML
 
@@ -48,28 +49,25 @@ class FixMatch(object):
     def __init__(self, args):
         self.args = args
 
-        if args.name == 'resnet18':
-            self.model = Res18(args.num_classes)
-        elif args.name == 'resnet50':
-            self.model = Res50(args.num_classes)
-        elif args.name == 'dense121':
-            self.model = DenseNet(args.num_classes)
-        else:
-            self.model = Res18_basic(args.num_classes)
-
         print(args)
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         args.device = device        
         print('Using device:', device)
-        print()
+
+        if args.pretrained:
+            self.model = load_best_model("./pretrained/model.pt", args.num_classes, args)
+
+        if args.name == 'resnet18':
+            self.model = Res18(args.num_classes)
+        elif args.name == 'resnet34':
+            self.model = Res34(args.num_classes)
+        elif args.name == 'resnet50':
+            self.model = Res50(args.num_classes)
+        else:
+            self.model = Res18(args.num_classes)
 
         #Additional Info when using cuda
         if device.type == 'cuda':
-            print(torch.cuda.get_device_name(0))
-            print('Memory Usage:')
-            print('Allocated:', round(torch.cuda.memory_allocated(0)/1024**3,1), 'GB')
-            print('Cached:   ', round(torch.cuda.memory_cached(0)/1024**3,1), 'GB')
-
             self.model = self.model.to(args.device)
 
         if args.local_rank == -1:
@@ -92,17 +90,28 @@ class FixMatch(object):
         if args.optim == "adam":
             self.optimizer = optim.Adam(self.model.parameters(), lr=args.lr,
                                         weight_decay=args.wdecay)
-        else:    
+        elif args.optim == 'sgd':    
             self.optimizer = optim.SGD(self.model.parameters(), lr=args.lr,
-                                        momentum=0.9, nesterov=args.nesterov)
-        args.iteration = args.num_labeled // args.batch_size // args.world_size
+                                        momentum=0.9, nesterov=args.nesterov, weight_decay=args.wdecay)
+        elif args.optim == 'yogi': 
+            yogi = optimize.Yogi(
+                self.model.parameters(),
+                lr=args.lr,
+                betas=(0.9, 0.999),
+                eps=1e-3,
+                initial_accumulator=1e-6,
+                weight_decay=args.wdecay,
+            )
+            self.optimizer = optimize.Lookahead(yogi, k=5, alpha=0.5)
+        else:
+            self.optimizer = optim.AdamW(self.model.parameters(), lr=args.lr,
+                                        betas=(0.9, 0.999), eps=1e-8, weight_decay=args.wdecay)
+        
+        args.iteration = args.num_labeled // args.batch_size * args.mu
         args.total_steps = args.epochs * args.iteration
         args.warmup = args.warmup
         self.scheduler = get_cosine_schedule_with_warmup(
             self.optimizer, args.warmup * args.iteration, args.total_steps)
-
-        if args.use_ema:
-            self.ema_model = ModelEMA(args, self.model, args.ema_decay, args.device)
 
         if args.local_rank != -1:
             self.model = torch.nn.parallel.DistributedDataParallel(
@@ -111,7 +120,7 @@ class FixMatch(object):
                 output_device=args.local_rank, 
                 find_unused_parameters=True)
 
-    def train(self, args, labeled_trainloader, unlabeled_w_trainloader, unlabeled_s_trainloader, global_step):
+    def train(self, args, labeled_trainloader, unlabeled_trainloader, global_step):
         batch_time = AverageMeter()
         data_time = AverageMeter()
 
@@ -128,64 +137,74 @@ class FixMatch(object):
         acc_top5 = AverageMeter()
         end = time.time()
 
-        train_loader = zip(labeled_trainloader, unlabeled_w_trainloader, unlabeled_s_trainloader)
+        # train_loader = zip(labeled_trainloader, unlabeled_w_trainloader, unlabeled_s_trainloader)
         self.model.train()
 
-        for batch_idx, (data_x, data_w_u, data_s_u) in enumerate(train_loader):
-            input_x, target_x = data_x
-            input_u_w, input_u_s = data_w_u[0], data_s_u[0]
+        labeled_train_iter = iter(labeled_trainloader)
+        unlabeled_train_iter = iter(unlabeled_trainloader)
+
+        batch_idx = 0
+
+        while batch_idx < args.batch_size:   
+            try:
+                data = labeled_train_iter.next()
+                inputs_x, targets_x = data
+            except:
+                labeled_train_iter = iter(labeled_trainloader)
+                data = labeled_train_iter.next()
+                inputs_x, targets_x = data
+            try:
+                inputs_u_w, inputs_u_s = unlabeled_train_iter.next()
+            except:
+                unlabeled_train_iter = iter(unlabeled_trainloader)
+                inputs_u_w, inputs_u_s = unlabeled_train_iter.next()
 
             data_time.update(time.time())
-            batch_size = input_x.shape[0]
+
+            labeled_batch_size = inputs_x.shape[0]
+            unlabeled_batch_size = inputs_u_w.shape[0]
 
             if args.device.type == 'cuda':
-                input_x = input_x.to(args.device)
-                input_u_w, input_u_s = input_u_w.to(args.device), input_u_s.to(args.device)            
-                target_x = target_x.to(args.device)
+                inputs_x = inputs_x.to(args.device)
+                inputs_u_w, inputs_u_s = inputs_u_w.to(args.device), inputs_u_s.to(args.device)            
+                targets_x = targets_x.to(args.device)
 
-            targets_org = target_x
+            targets_org = targets_x
 
-            emb_x, logits_x = self.model(input_x)
-            emb_u_w, logits_u_w = self.model(input_u_w)
-            emb_u_s, logits_u_s = self.model(input_u_s)
+            emb_x, logits_x = self.model(inputs_x)
+            emb_u_w, logits_u_w = self.model(inputs_u_w)
+            emb_u_s, logits_u_s = self.model(inputs_u_s)
 
-            Lx = F.cross_entropy(logits_x, target_x, reduction='mean')
+            Lx = F.cross_entropy(logits_x, targets_x, reduction='mean')
 
             pseudo_label = torch.softmax(logits_u_w.detach(), dim=-1)
-            max_probs, target_u = torch.max(pseudo_label, dim=-1)
+            max_probs, targets_u = torch.max(pseudo_label, dim=-1)
             mask = max_probs.ge(args.threshold).float()
 
-            Lu = (F.cross_entropy(logits_u_s, target_u, reduction='none') * mask).mean()
+            Lu = (F.cross_entropy(logits_u_s, targets_u, reduction='none') * mask).mean()
 
-            if global_step < 20:
-                loss = Lx
-            else:            
-                loss = Lx + args.lambda_u * Lu
+            loss = Lx + args.lambda_u * Lu
             loss.backward()
 
-            losses_curr.update(loss.item(), input_x.size(0))
-            losses_x_curr.update(Lx.item(), input_x.size(0))
-            losses_u_curr.update(Lu.item(), input_x.size(0))
+            losses_curr.update(loss.item(), unlabeled_batch_size)
+            losses_x_curr.update(Lx.item(), labeled_batch_size)
+            losses_u_curr.update(Lu.item(), unlabeled_batch_size)
 
-            losses.update(loss.item(), input_x.size(0))
-            losses_x.update(Lx.item(), input_x.size(0))
-            losses_u.update(Lu.item(), input_x.size(0))
+            losses.update(loss.item(), unlabeled_batch_size)
+            losses_x.update(Lx.item(), labeled_batch_size)
+            losses_u.update(Lu.item(), unlabeled_batch_size)
             
             self.optimizer.step()
             self.scheduler.step()
-
-            if args.use_ema:
-                self.ema_model.update(self.model)
-
             self.model.zero_grad()
-
+    
             batch_time.update(time.time() - end)
             end = time.time()
             mask_prob = mask.mean().item()
 
             with torch.no_grad():
                     # compute guessed labels of unlabel samples
-                embed_x, pred_x1 = self.model(input_x)
+                embed_x, pred_x1 = self.model(inputs_x)
 
                 if IS_ON_NSML and global_step % args.log_interval == 0:
                     nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_u_curr.avg)
@@ -195,10 +214,12 @@ class FixMatch(object):
 
                 acc_top1b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=1)*100
                 acc_top5b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=5)*100    
-                acc_top1.update(torch.as_tensor(acc_top1b), input_x.size(0))        
-                acc_top5.update(torch.as_tensor(acc_top5b), input_x.size(0))
+                acc_top1.update(torch.as_tensor(acc_top1b), inputs_x.size(0))        
+                acc_top5.update(torch.as_tensor(acc_top5b), inputs_x.size(0))
+                
+                print('acc_top1: {:.3f}%, acc_top5: {:.3f}%'.format(acc_top1b, acc_top5b))
 
-
+            batch_idx += 1
         return losses.avg, losses_x.avg, losses_u.avg, acc_top1.avg, acc_top5.avg
 
 
@@ -213,11 +234,18 @@ class FixMatch(object):
         with torch.no_grad():
             for batch_idx, (inputs, targets) in enumerate(test_loader):
                 data_time.update(time.time() - end)
+
                 self.model.eval()
+
+                if args.device.type == 'cuda':
+                    inputs = inputs.to(args.device)
+                    targets = targets.to(args.device)
 
                 inputs = inputs.to(args.device)
                 targets = targets.to(args.device)
+
                 emb_o, outputs = self.model(inputs)
+
                 loss = F.cross_entropy(outputs, targets)
                 
                 prec1 = top_n_accuracy_score(targets.data.cpu().numpy(), outputs.data.cpu().numpy(), n=1)*100

@@ -4,6 +4,14 @@ import nsml
 import numpy as np
 import os
 
+from PIL import Image
+import numpy as np
+import torch
+from torchvision.transforms import transforms
+import time
+import random
+import models
+
 class AverageMeter(object):
     """Computes and stores the average and current value"""
     def __init__(self):
@@ -20,36 +28,64 @@ class AverageMeter(object):
         self.sum += val * n
         self.count += n
         self.avg = self.sum / self.count
+    
+def default_image_loader(path):
+    return Image.open(path).convert('RGB')
+
+
+class SimpleImageLoader(torch.utils.data.Dataset):
+    def __init__(self, rootdir, split, ids=None, transform=None, loader=default_image_loader, strong_transform=None):
+        if split == 'test':
+            self.impath = os.path.join(rootdir, 'test_data')
+            meta_file = os.path.join(self.impath, 'test_meta.txt')
+        else:
+            self.impath = os.path.join(rootdir, 'train/train_data')
+            meta_file = os.path.join(rootdir, 'train/train_label')
+
+        imnames = []
+        imclasses = []
         
+        with open(meta_file, 'r') as rf:
+            for i, line in enumerate(rf):
+                if i == 0:
+                    continue
+                instance_id, label, file_name = line.strip().split()        
+                if int(label) == -1 and (split != 'unlabel' and split != 'test'):
+                    continue
+                if int(label) != -1 and (split == 'unlabel' or split == 'test'):
+                    continue
+                if (ids is None) or (int(instance_id) in ids):
+                    if os.path.exists(os.path.join(self.impath, file_name)):
+                        imnames.append(file_name)
+                        if split == 'train' or split == 'val':
+                            imclasses.append(int(label))
+
+        self.transform = transform
+        self.strong_transform = strong_transform
+        self.loader = loader
+        self.split = split
+        self.imnames = imnames
+        self.imclasses = imclasses
+    
+    def __getitem__(self, index):
+        filename = self.imnames[index]
+        img = self.loader(os.path.join(self.impath, filename))
         
-class SemiLoss(object):
-    def __call__(self, outputs_x, targets_x, outputs_u, targets_u, epoch, final_epoch):
-        probs_u = torch.softmax(outputs_u, dim=1)
-        Lx = -torch.mean(torch.sum(F.log_softmax(outputs_x, dim=1) * targets_x, dim=1))
-        Lu = torch.mean((probs_u - targets_u)**2)
-        return Lx, Lu, opts.lambda_u * linear_rampup(epoch, final_epoch)        
-
-
-class WeightEMA(object):
-    def __init__(self, model, ema_model, lr, alpha=0.999):
-        self.model = model
-        self.ema_model = ema_model
-        self.alpha = alpha
-        self.params = list(model.state_dict().values())
-        self.ema_params = list(ema_model.state_dict().values())
-        self.wd = 0.02 * lr * alpha
-
-        for param, ema_param in zip(self.params, self.ema_params):
-            param.data.copy_(ema_param.data)
-
-    def step(self):
-        one_minus_alpha = 1.0 - self.alpha
-        for param, ema_param in zip(self.params, self.ema_params):
-            if ema_param.dtype==torch.float32:
-                ema_param.mul_(self.alpha)
-                ema_param.add_(param * one_minus_alpha)
-                # customized weight decay
-                param.mul_(1 - self.wd)
+        if self.split == 'test':
+            if self.transform is not None:
+                img = self.transform(img)
+            return img
+        if self.split != 'unlabel':
+            if self.transform is not None:
+                img = self.transform(img)
+            label = self.imclasses[index]
+            return img, label
+        else:        
+            img1, img2 = self.transform(img), self.strong_transform(img)
+            return img1, img2
+        
+    def __len__(self):
+        return len(self.imnames)
 
 
 def split_ids(path, ratio):
@@ -82,11 +118,12 @@ def _infer(model, root_path, test_loader=None):
         test_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(root_path, 'test',
                                transform=transforms.Compose([
-                                   transforms.Resize(opts.imResize),
-                                   transforms.CenterCrop(opts.imsize),
+                                   transforms.Resize(224),
+                                   transforms.CenterCrop(256),
                                    transforms.ToTensor(),
                                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                               ])), batch_size=opts.batchsize, shuffle=False, num_workers=4, pin_memory=True)
+                               ])), 
+                               batch_size=64, shuffle=False, num_workers=0, pin_memory=True)
         print('loaded {} test images'.format(len(test_loader.dataset)))
 
     outputs = []
@@ -101,6 +138,7 @@ def _infer(model, root_path, test_loader=None):
 
     outputs = np.concatenate(outputs)
     return outputs
+
 
 def bind_nsml(model):
     def save(dir_name, *args, **kwargs):
@@ -119,6 +157,7 @@ def bind_nsml(model):
         return _infer(model, root_path)
 
     nsml.bind(save=save, load=load, infer=infer)
+
 
 def save_checkpoint(state, is_best, checkpoint, filename='checkpoint.pth.tar'):
     filepath = os.path.join(checkpoint, filename)
@@ -148,3 +187,12 @@ def top_n_accuracy_score(y_true, y_prob, n=5, normalize=True):
         return counter * 1.0 / num_obs
     else:
         return counter
+
+def load_best_model(path, num_classes, args):    
+    os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
+
+    model = models.Res34(num_classes)
+    bestWeight = torch.load(path, map_location=args.device)
+    model.load_state_dict(bestWeight)
+
+    return model

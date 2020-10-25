@@ -1,7 +1,7 @@
 # CS492 CV Project
 ## Applying FixMatch to NAVER Shopping Dataset
 
-we introduce the variation of FixMatch applying to NAVER Shopping Dataset [2]. In this repository, we especially focus on optimizing augmentation step inside FixMatch [3]. We compare how the performance of FixMatch is better than that of MixMatch [1]. Next, we make an ablation study on main hyperparameters of our model to find obstacles and possible approaches for a better performance.
+We introduce the variation of FixMatch applying to NAVER Shopping Dataset [2]. In this repository, we especially focus on optimizing augmentation step inside FixMatch [3]. We compare how the performance of FixMatch is better than that of MixMatch [1]. Next, we make an ablation study on main hyperparameters of our model to find obstacles and possible approaches for a better performance.
 
 
 Project Contributor: [Yoonseo Kim](https://github.com/myoons), [Yeji Han](https://github.com/yejihan-dev)
@@ -56,10 +56,6 @@ There are several option flags you can apply to change hyperparameters of the mo
 - --threshold: pseudo-label threshold
     - default=0.95
     - type=float
-- --mode: nsml mode
-    - --mode
-    - type=str
-    - default='train'
 
 ## Load Pretrained Model
 You can load this pretrained weights using `pretrained` flag in NSML. We also saved the best pretrained model in path `/pretrained/model.pt`.

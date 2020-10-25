@@ -52,14 +52,11 @@ def run_session(fixmatch, args, labeled_trainloader, unlabeled_trainloader, vali
         if is_best:
             print('model achieved the best accuracy ({:.3f}%) - saving best checkpoint...'.format(best_acc))
             if IS_ON_NSML:
-                nsml.save(args.name + '_best')
-                torch.save(fixmatch.model.state_dict(), os.path.join('runs', args.name + '_best'))
-
+                nsml.save(args.name + '_best')               
 
         if (epoch + 1) % args.save_epoch == 0:
             if IS_ON_NSML:
                 nsml.save(args.name + '_e{}'.format(epoch))
-                torch.save(fixmatch.model.state_dict(), os.path.join('runs', args.name + '_best'))
 
         global_step += 1
 

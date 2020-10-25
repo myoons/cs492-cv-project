@@ -22,7 +22,7 @@ nsml login
 `main.py` is what NSML runs to import the model or to train it. `main.py` serves as a frame for iterating epochs. In order to see the specific implementation of FixMatch alogrithm, refer to `fixmatch.py`. If you want to see how RandAugment is implemented, refer to `rand_augment.py`. To find out auxiliary functions for dataset and NSML, refer to `dataset.py` and `utils.py`.
 
 
-## Train the model
+## Train the Model
 To train the model on NSML, use the
 ```bash
 nsml run -d fashion_dataset -g 1 --args "--name resnet18 --optim sgd --batch-size 64 --epoch 200 --mu 7 --lambda-u 1 --threshold 0.95"
